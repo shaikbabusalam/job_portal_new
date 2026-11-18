@@ -1,51 +1,86 @@
-import { PDFParse } from 'pdf-parse'
 import mammoth from 'mammoth'
+import { extractText, getDocumentProxy } from 'unpdf'
 import { analyzeResume } from '../services/atsAnalyzer.js'
+import { generateResumeFeedback, AiError } from '../services/aiService.js'
+import { createRateLimiter } from '../utils/rateLimiter.js'
+import Job from '../models/Job.js'
 
 const HIRELAYER_PARSE_URL = 'https://hirelayer.co/api/v4/resumes/parse'
-const HIRELAYER_MAX_BYTES = 4.5 * 1024 * 1024 // HireLayer's file size limit
+const HIRELAYER_MAX_BYTES = 4.5 * 1024 * 1024
 const MIN_TEXT_LENGTH = 50
 
-// Check the real file signature, not just the file name / mime type
-const isPdf = (buf) => buf.length > 4 && buf.subarray(0, 4).toString('latin1') === '%PDF'
-const isZip = (buf) => buf.length > 4 && buf[0] === 0x50 && buf[1] === 0x4b
+const getAuth = (req) => (typeof req.auth === 'function' ? req.auth() : req.auth)
 
-// Read text with our own parsers (fast, free, nothing leaves the server)
+// AI feedback costs money: 10 requests per hour per signed-in user
+// (in-memory, so on serverless hosting the count can reset between requests)
+const aiLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 10 })
+
+// Newest visible jobs used for "recommended jobs"
+const loadJobsForMatching = () =>
+    Job.find({ visible: true })
+        .sort({ date: -1 })
+        .limit(40)
+        .populate({ path: 'companyId', select: 'name' })
+        .lean()
+
+// Check actual file signatures
+const isPdf = (buf) =>
+    buf.length > 4 &&
+    buf.subarray(0, 4).toString('latin1') === '%PDF'
+
+const isZip = (buf) =>
+    buf.length > 4 &&
+    buf[0] === 0x50 &&
+    buf[1] === 0x4b
+
+// Extract text locally from PDF or DOCX (Vercel Serverless compatible)
 const extractTextLocally = async (file) => {
     const fileName = file.originalname.toLowerCase()
 
     if (fileName.endsWith('.pdf')) {
-        const parser = new PDFParse({ data: Uint8Array.from(file.buffer) })
-        try {
-            const parsed = await parser.getText()
-            return { text: parsed.text || '', pages: parsed.total || null }
-        } finally {
-            await parser.destroy()
+        const pdf = await getDocumentProxy(new Uint8Array(file.buffer))
+        const { totalPages, text } = await extractText(pdf, { mergePages: true })
+
+        return {
+            text: text || '',
+            pages: totalPages || null
         }
     }
 
-    const result = await mammoth.extractRawText({ buffer: file.buffer })
-    return { text: result.value || '', pages: null }
+    const result = await mammoth.extractRawText({
+        buffer: file.buffer
+    })
+
+    return {
+        text: result.value || '',
+        pages: null
+    }
 }
 
-// Fallback: HireLayer reads scanned / image-based resumes with OCR.
-// Only used when local extraction finds (almost) no text.
+// HireLayer fallback OCR for scanned resumes
 const extractTextWithHireLayer = async (file) => {
-    // Strip whitespace, quotes and stray backslashes that sometimes end up in .env values
-    const apiKey = (process.env.HIRELAYER_API_KEY || '').replace(/[\s"'\\]+$/g, '').trim()
+    const apiKey = (process.env.HIRELAYER_API_KEY || '')
+        .replace(/[\s"'\\]+$/g, '')
+        .trim()
 
     if (!apiKey) return ''
     if (file.size > HIRELAYER_MAX_BYTES) return ''
 
     try {
         const form = new FormData()
-        form.append('file', new Blob([file.buffer], { type: file.mimetype }), file.originalname)
+        form.append(
+            'file',
+            new Blob([file.buffer], { type: file.mimetype }),
+            file.originalname
+        )
 
         const response = await fetch(HIRELAYER_PARSE_URL, {
             method: 'POST',
-            headers: { 'X-API-Key': apiKey },
+            headers: {
+                'X-API-Key': apiKey
+            },
             body: form,
-            signal: AbortSignal.timeout(150000) // scans can take a while
+            signal: AbortSignal.timeout(9000) // Stay under Vercel's 10s Hobby timeout
         })
 
         const data = await response.json().catch(() => null)
@@ -66,7 +101,7 @@ const extractTextWithHireLayer = async (file) => {
     }
 }
 
-// POST /api/ats/analyze  (multipart: resume file + optional jobDescription)
+// POST /api/ats/analyze
 export const analyzeResumeFile = async (req, res) => {
     try {
         const file = req.file
@@ -78,9 +113,32 @@ export const analyzeResumeFile = async (req, res) => {
             })
         }
 
-        const jobDescription = String(req.body?.jobDescription || '').slice(0, 10000)
-        const fileName = file.originalname.toLowerCase()
+        // Optional AI coaching: needs a signed-in user
+        const wantsAi = String(req.body?.ai) === 'true'
 
+        if (wantsAi) {
+            const userId = getAuth(req)?.userId
+
+            if (!userId) {
+                return res.status(401).json({
+                    success: false,
+                    message: 'Please log in to get AI feedback.'
+                })
+            }
+
+            if (!aiLimiter.hit(userId)) {
+                return res.status(429).json({
+                    success: false,
+                    message: 'You have reached the hourly limit for AI feedback. Please try again later.'
+                })
+            }
+        }
+
+        const jobDescription = String(
+            req.body?.jobDescription || ''
+        ).slice(0, 10000)
+
+        const fileName = file.originalname.toLowerCase()
         const validPdf = fileName.endsWith('.pdf') && isPdf(file.buffer)
         const validDocx = fileName.endsWith('.docx') && isZip(file.buffer)
 
@@ -94,16 +152,16 @@ export const analyzeResumeFile = async (req, res) => {
         let text = ''
         let pages = null
 
-        // 1. Try our own parser first
+        // 1. Try local extraction
         try {
             const extracted = await extractTextLocally(file)
             text = extracted.text
             pages = extracted.pages
         } catch (error) {
-            console.error('Local extraction failed:', error.message)
+            console.error('Local extraction failed:', error)
         }
 
-        // 2. If we got (almost) nothing, try HireLayer OCR
+        // 2. Use HireLayer if local extraction finds insufficient text
         if (text.trim().length < MIN_TEXT_LENGTH) {
             const fallbackText = await extractTextWithHireLayer(file)
             if (fallbackText.trim().length >= MIN_TEXT_LENGTH) {
@@ -111,6 +169,7 @@ export const analyzeResumeFile = async (req, res) => {
             }
         }
 
+        // 3. Check extracted text
         if (text.trim().length < MIN_TEXT_LENGTH) {
             return res.status(422).json({
                 success: false,
@@ -120,15 +179,38 @@ export const analyzeResumeFile = async (req, res) => {
             })
         }
 
-        const analysis = analyzeResume({ text, pages, jobDescription })
+        // 4. Analyze resume
+        const analysis = analyzeResume({
+            text,
+            pages,
+            jobDescription
+        })
+
+        // 5. Optional AI feedback + job recommendations
+        let aiFeedback = null
+        let aiError = null
+
+        if (wantsAi) {
+            try {
+                const jobs = await loadJobsForMatching()
+                aiFeedback = await generateResumeFeedback({ text, analysis, jobs })
+            } catch (error) {
+                aiError = error instanceof AiError
+                    ? error.message
+                    : 'AI feedback is unavailable right now.'
+                if (!(error instanceof AiError)) console.error('AI feedback error:', error.message)
+            }
+        }
 
         return res.json({
             success: true,
             fileName: file.originalname,
-            analysis
+            analysis,
+            aiFeedback,
+            aiError
         })
     } catch (error) {
-        console.error('ATS analysis error:', error.message)
+        console.error('ATS analysis error:', error)
         return res.status(500).json({
             success: false,
             message:

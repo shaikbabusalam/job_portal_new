@@ -9,6 +9,7 @@
     "dev": "nodemon server.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.9.0",
     "@clerk/express": "^2.1.90",
     "@napi-rs/canvas": "^1.1.1",
     "@sentry/node": "^11.11.0",
@@ -23,7 +24,10 @@
     "mongoose": "^9.12.1",
     "multer": "^2.5.0",
     "pdf-parse": "^2.4.5",
-    "svix": "^2.10.0"
+    "sanitize-html": "^2.18.2",
+    "socket.io": "^4.8.4",
+    "svix": "^2.10.0",
+    "unpdf": "^1.9.1"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"

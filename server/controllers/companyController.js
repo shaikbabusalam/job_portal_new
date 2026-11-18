@@ -5,6 +5,7 @@ import generateToken from "../utils/generateToken.js";
 import Job from "../models/Job.js";
 import JobApplication from "../models/JobApplication.js";
 import Interview from "../models/Interview.js";
+import { Chat } from "../models/chatModel.js";
 
 export const registerCompany = async (req, res) => {
     try {
@@ -179,6 +180,7 @@ export const deleteJob = async (req, res) => {
 
         await Job.findByIdAndDelete(id);
         await JobApplication.deleteMany({ jobId: id });
+        await Interview.deleteMany({ jobId: id });
 
         return res.json({ success: true, message: "Job deleted successfully" });
     } catch (error) {
@@ -189,7 +191,53 @@ export const deleteJob = async (req, res) => {
 export const changeJobApplicationStatus = async (req, res) => {
     try {
         const { id, status } = req.body;
-        await JobApplication.findByIdAndUpdate(id, { status });
+
+        // Automatically delete rejected applications and any associated interviews
+        if (status?.trim().toLowerCase() === 'rejected') {
+            const deletedApp = await JobApplication.findByIdAndDelete(id);
+            if (!deletedApp) {
+                return res.json({ success: false, message: 'Application not found' });
+            }
+            await Interview.deleteMany({ applicationId: id });
+            return res.json({ success: true, message: 'Application rejected and removed' });
+        }
+
+        const application = await JobApplication.findByIdAndUpdate(
+            id,
+            { status },
+            { new: true }
+        )
+            .populate('jobId', 'title')
+            .populate('companyId', 'name');
+
+        if (!application) {
+            return res.json({ success: false, message: 'Application not found' });
+        }
+
+        // Automatically create chat room & initial acceptance message when accepted
+        if (status?.trim().toLowerCase() === 'accepted') {
+            const jobId = application.jobId?._id || application.jobId;
+            const applicantId = String(application.userId);
+            const recruiterId = String(application.companyId?._id || application.companyId);
+            const companyName = application.companyId?.name || 'Our team';
+            const jobTitle = application.jobId?.title || 'the position';
+
+            let chat = await Chat.findOne({ jobId, applicantId, recruiterId });
+            if (!chat) {
+                await Chat.create({
+                    jobId,
+                    applicantId,
+                    recruiterId,
+                    messages: [
+                        {
+                            sender: recruiterId,
+                            text: `Congratulations! ${companyName} has accepted your application for ${jobTitle}. Reply here to discuss next steps!`,
+                        }
+                    ]
+                });
+            }
+        }
+
         res.json({ success: true, message: 'Status updated successfully' });
     } catch (error) {
         res.json({ success: false, message: error.message });
@@ -268,6 +316,35 @@ export const deleteInterview = async (req, res) => {
 
         await Interview.findByIdAndDelete(id);
         res.json({ success: true, message: "Interview removed successfully" });
+    } catch (error) {
+        res.json({ success: false, message: error.message });
+    }
+};
+
+
+
+export const updateInterview = async (req, res) => {
+    try {
+        const { id, date, time, note } = req.body;
+        const companyId = req.company._id;
+
+        if (!id || !date || !time) {
+            return res.json({ success: false, message: "Missing required interview details" });
+        }
+
+        const interview = await Interview.findOneAndUpdate(
+            { _id: id, companyId },
+            { date, time, note: note || '' },
+            { new: true }
+        )
+            .populate('userId', 'name image email')
+            .populate('jobId', 'title location');
+
+        if (!interview) {
+            return res.json({ success: false, message: "Interview not found or unauthorized" });
+        }
+
+        res.json({ success: true, message: "Interview updated successfully!", interview });
     } catch (error) {
         res.json({ success: false, message: error.message });
     }

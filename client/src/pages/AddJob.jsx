@@ -14,6 +14,31 @@ const experienceLevels = [
   'Senior level'
 ]
 
+const buildInstantTemplate = ({ title, category, location, level, salary }) => {
+  const skillText = `${category || 'modern'} tools and industry best practices`
+
+  return `
+    <p>We are looking for a motivated <strong>${title.trim()}</strong> to join our ${category || 'engineering'} team${location ? ` in <strong>${location}</strong>` : ''}.</p>
+    <h2>Key Responsibilities</h2>
+    <ul>
+      <li>Design, build, and maintain reliable solutions for core business initiatives.</li>
+      <li>Collaborate closely with cross-functional teams to ship features on schedule.</li>
+      <li>Ensure high standards of performance, security, and maintainability.</li>
+    </ul>
+    <h2>Required Qualifications</h2>
+    <ul>
+      <li>Hands-on experience with <strong>${skillText}</strong>.</li>
+      <li>${level || 'Relevant'} experience with strong analytical and problem-solving skills.</li>
+      <li>Effective communication and teamwork in a fast-paced environment.</li>
+    </ul>
+    <h2>What We Offer</h2>
+    <ul>
+      <li>Competitive compensation${salary ? ` (₹${Number(salary).toLocaleString('en-IN')} per annum)` : ''} and growth opportunities.</li>
+      <li>Supportive culture with flexible work options.</li>
+    </ul>
+  `.trim()
+}
+
 const AddJob = () => {
   const navigate = useNavigate()
   const locationState = useLocation()
@@ -26,6 +51,7 @@ const AddJob = () => {
   const [category, setCategory] = useState(JobCategories[0] || '')
   const [level, setLevel] = useState(experienceLevels[0])
   const [salary, setSalary] = useState('')
+  const [generating, setGenerating] = useState(false)
 
   const editorRef = useRef(null)
   const quillRef = useRef(null)
@@ -98,7 +124,6 @@ const AddJob = () => {
         salary: Number(salary)
       }
 
-      // Determine endpoint and attach job ID if editing an existing job
       let endpoint = '/api/company/post-job'
       if (editingJob) {
         endpoint = '/api/company/edit-job'
@@ -119,6 +144,41 @@ const AddJob = () => {
       }
     } catch (error) {
       toast.error(error.response?.data?.message || error.message)
+    }
+  }
+
+  // Instant draft + background AI enhancement
+  const handleGenerateDescription = async () => {
+    if (!title.trim()) {
+      toast.error('Enter the job title first')
+      return
+    }
+
+    const hasText = (quillRef.current?.getText().trim() || '').length > 0
+    if (hasText && !window.confirm('This will replace the current description. Continue?')) return
+
+    const instantHtml = buildInstantTemplate({ title, category, location, level, salary })
+    if (quillRef.current) {
+      quillRef.current.clipboard.dangerouslyPasteHTML(instantHtml)
+    }
+
+    setGenerating(true)
+
+    try {
+      const { data } = await axios.post(
+        backendUrl + '/api/ai/job-description',
+        { title: title.trim(), category, location, level },
+        { headers: { token: companyToken }, timeout: 6000 }
+      )
+
+      if (data.success && data.description && quillRef.current) {
+        quillRef.current.clipboard.dangerouslyPasteHTML(data.description)
+      }
+      toast.success('Description ready! Review and edit before posting.')
+    } catch {
+      toast.success('Description drafted! Review and edit before posting.')
+    } finally {
+      setGenerating(false)
     }
   }
 
@@ -163,9 +223,20 @@ const AddJob = () => {
 
         {/* Job Description */}
         <div>
-          <label className={labelStyle}>
-            Job Description
-          </label>
+          <div className="flex items-center justify-between gap-3 mb-2">
+            <label className="block text-sm text-gray-700">
+              Job Description
+            </label>
+
+            <button
+              type="button"
+              onClick={handleGenerateDescription}
+              disabled={generating}
+              className="text-xs font-medium text-indigo-600 hover:text-indigo-800 border border-indigo-200 hover:bg-indigo-50 rounded-md px-3 py-1.5 transition disabled:opacity-50"
+            >
+              {generating ? 'Refining with AI...' : '✦ Generate with AI'}
+            </button>
+          </div>
 
           <div
             ref={editorRef}
@@ -176,7 +247,6 @@ const AddJob = () => {
         {/* Category and Location */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
 
-          {/* Job Category */}
           <div>
             <label className={labelStyle}>
               Job Category
@@ -196,7 +266,6 @@ const AddJob = () => {
             </select>
           </div>
 
-          {/* Job Location */}
           <div>
             <label className={labelStyle}>
               Job Location
@@ -221,7 +290,6 @@ const AddJob = () => {
         {/* Experience and Salary */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
 
-          {/* Experience Level */}
           <div>
             <label className={labelStyle}>
               Experience Level
@@ -241,7 +309,6 @@ const AddJob = () => {
             </select>
           </div>
 
-          {/* Salary */}
           <div>
             <label className={labelStyle}>
               Annual Salary (₹)

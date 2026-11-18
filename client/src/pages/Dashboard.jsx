@@ -1,37 +1,39 @@
+// src/pages/Dashboard.jsx
 import React, { useEffect, useContext } from 'react'
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { AppContext } from '../context/AppContext'
 import axios from 'axios'
 import { toast } from 'react-toastify'
 
 const Dashboard = () => {
   const navigate = useNavigate()
+  const location = useLocation()
   const { companyData, setCompanyData, companyToken, setCompanyToken, backendUrl } = useContext(AppContext)
 
-  // Fetch company data on mount if token exists but companyData is missing (e.g. on page refresh)
+  const activeToken = companyToken || sessionStorage.getItem('companyToken')
+
   useEffect(() => {
     const fetchCompanyData = async () => {
       try {
         const { data } = await axios.get(backendUrl + '/api/company/company', {
-          headers: { token: companyToken }
+          headers: { token: activeToken }
         })
-        if (data.success) {
+        if (data.success && data.company) {
           setCompanyData(data.company)
         } else {
-          toast.error(data.message)
           handleLogout()
         }
       } catch (error) {
         toast.error(error.response?.data?.message || error.message)
+        handleLogout()
       }
     }
 
-    if (companyToken && !companyData) {
+    if (activeToken && !companyData) {
       fetchCompanyData()
     }
-  }, [companyToken, companyData])
+  }, [activeToken, companyData])
 
-  // Dashboard menu items
   const menuItems = [
     {
       name: 'Dashboard',
@@ -81,50 +83,47 @@ const Dashboard = () => {
   const handleLogout = () => {
     setCompanyToken(null)
     setCompanyData(null)
-    localStorage.removeItem('companyToken')
+    sessionStorage.removeItem('companyToken')
     navigate('/')
   }
 
-  useEffect(()=>{
-    if(companyData){
-      navigate('/dashboard/manage-jobs')
+  useEffect(() => {
+    if (!activeToken) {
+      navigate('/')
     }
-  },[companyData])
+  }, [activeToken, location.pathname])
+
+  if (!activeToken) return null
 
   return (
     <div className="min-h-screen bg-white">
-
-      {/* Header */}
       <header className="h-[76px] border-b border-gray-200 flex items-center justify-between px-5 md:px-10 bg-white relative z-50">
-
-        {/* Logo */}
         <div className="flex items-center gap-2">
           <div className="w-9 h-9 bg-indigo-600 rounded-lg flex items-center justify-center text-white font-bold text-xl">
             J
           </div>
 
-          <h1 
-            onClick={() => navigate('/')} 
+          <h1
+            onClick={() => navigate('/')}
             className="text-2xl font-bold text-gray-900 max-sm:w-32 cursor-pointer"
           >
             Jobaora
           </h1>
         </div>
 
-        {/* Profile Dropdown Section */}
         {companyData && (
           <div className="flex items-center gap-3">
             <p className="max-sm:hidden text-gray-700 font-medium">Welcome, {companyData.name}</p>
             <div className="relative group">
-              <img 
-                className="w-9 h-9 border border-gray-300 rounded-full object-cover cursor-pointer shadow-sm" 
-                src={companyData.image} 
-                alt="Company Logo" 
+              <img
+                className="w-9 h-9 border border-gray-300 rounded-full object-cover cursor-pointer shadow-sm"
+                src={companyData.image}
+                alt="Company Logo"
               />
               <div className="absolute hidden group-hover:block top-0 right-0 z-10 pt-10">
                 <ul className="list-none m-0 p-2 bg-white rounded-md border border-gray-200 text-sm shadow-lg">
-                  <li 
-                    onClick={handleLogout} 
+                  <li
+                    onClick={handleLogout}
                     className="py-1.5 px-3 cursor-pointer pr-8 text-red-600 hover:bg-red-50 rounded transition-colors font-medium"
                   >
                     Logout
@@ -134,13 +133,9 @@ const Dashboard = () => {
             </div>
           </div>
         )}
-
       </header>
 
-      {/* Main Layout */}
       <div className="flex min-h-[calc(100vh-76px)]">
-
-        {/* Desktop Sidebar */}
         <aside className="w-[220px] shrink-0 border-r border-gray-200 bg-white hidden sm:block">
           <nav className="pt-5">
             {menuItems.map((item) => (
@@ -163,7 +158,6 @@ const Dashboard = () => {
           </nav>
         </aside>
 
-        {/* Mobile Navigation */}
         <div className="sm:hidden fixed bottom-0 left-0 right-0 z-40 bg-white border-t border-gray-200 flex justify-around py-3 shadow-lg">
           {menuItems.map((item) => (
             <NavLink
@@ -184,11 +178,9 @@ const Dashboard = () => {
           ))}
         </div>
 
-        {/* Page Content */}
         <main className="flex-1 min-w-0 bg-slate-50 p-5 md:p-8 pb-24 sm:pb-8">
           <Outlet />
         </main>
-
       </div>
     </div>
   )

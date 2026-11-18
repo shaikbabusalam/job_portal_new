@@ -1,9 +1,7 @@
-
-import React, { useState } from 'react'
+import React, { useContext, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useClerk } from '@clerk/clerk-react'
+import { AppContext } from '../context/AppContext'
 
-// Jobaora Logo
 const JobaoraLogo = () => {
   return (
     <div className="flex flex-col">
@@ -59,13 +57,10 @@ const JobaoraLogo = () => {
 
 const Footer = () => {
   const [activeSection, setActiveSection] = useState(null)
-
-  const { openSignIn, openSignUp } = useClerk()
+  const { setShowRecruiterLogin } = useContext(AppContext)
 
   const toggleSection = (section) => {
-    setActiveSection(
-      activeSection === section ? null : section
-    )
+    setActiveSection(activeSection === section ? null : section)
   }
 
   const scrollToTop = () => {
@@ -75,12 +70,17 @@ const Footer = () => {
     })
   }
 
+  const openRecruiterModal = () => {
+    scrollToTop()
+    setShowRecruiterLogin(true)
+  }
+
   const sections = [
     {
       title: 'Quick Links',
       links: [
         { name: 'Home', path: '/' },
-        { name: 'Browse Jobs', path: '/' },
+        { name: 'ATS Resume Checker', path: '/ats-checker' },
         { name: 'Applied Jobs', path: '/applications' }
       ]
     },
@@ -96,15 +96,15 @@ const Footer = () => {
       links: [
         {
           name: 'Recruiter Login',
-          action: () => openSignIn()
+          action: openRecruiterModal
         },
         {
           name: 'Recruiter Sign Up',
-          action: () => openSignUp()
+          action: openRecruiterModal
         },
         {
           name: 'Post a Job',
-          action: () => openSignIn()
+          action: openRecruiterModal
         }
       ]
     }
@@ -112,14 +112,10 @@ const Footer = () => {
 
   return (
     <footer className="bg-gray-50 border-t border-gray-200 mt-20">
-
       <div className="max-w-7xl mx-auto px-6 md:px-10 py-12">
-
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-10">
-
           {/* Logo & Description */}
           <div>
-
             <Link to="/" onClick={scrollToTop}>
               <JobaoraLogo />
             </Link>
@@ -131,7 +127,6 @@ const Footer = () => {
 
             {/* Social Media */}
             <div className="flex gap-3 mt-5">
-
               <a
                 href="https://www.linkedin.com/"
                 target="_blank"
@@ -161,21 +156,18 @@ const Footer = () => {
               >
                 f
               </a>
-
             </div>
           </div>
 
           {/* Navigation Sections */}
           {sections.map((section) => (
             <div key={section.title}>
-
               <button
                 onClick={() => toggleSection(section.title)}
                 className="w-full flex justify-between items-center text-left font-semibold text-gray-900 mb-5"
                 aria-expanded={activeSection === section.title}
               >
                 {section.title}
-
                 <span className="lg:hidden text-blue-600 text-xl">
                   {activeSection === section.title ? '−' : '+'}
                 </span>
@@ -186,10 +178,8 @@ const Footer = () => {
                   activeSection === section.title ? 'block' : 'hidden'
                 } lg:block`}
               >
-
                 {section.links.map((link) => (
                   <li key={link.name}>
-
                     {link.path ? (
                       <Link
                         to={link.path}
@@ -201,29 +191,24 @@ const Footer = () => {
                     ) : (
                       <button
                         onClick={link.action}
-                        className="hover:text-blue-600 hover:translate-x-1 inline-block transition-all duration-200"
+                        className="hover:text-blue-600 hover:translate-x-1 inline-block transition-all duration-200 cursor-pointer"
                       >
                         {link.name}
                       </button>
                     )}
-
                   </li>
                 ))}
-
               </ul>
             </div>
           ))}
-
         </div>
 
         {/* Contact Section */}
         <div className="mt-12 bg-white rounded-xl border border-gray-200 p-6 flex flex-col md:flex-row justify-between items-center gap-5">
-
           <div>
             <h3 className="font-semibold text-gray-900 text-lg">
               Have questions?
             </h3>
-
             <p className="text-sm text-gray-500 mt-1">
               Get in touch with our support team.
             </p>
@@ -235,47 +220,21 @@ const Footer = () => {
           >
             Contact Us →
           </a>
-
         </div>
 
         {/* Bottom Footer */}
         <div className="border-t border-gray-200 mt-10 pt-6 flex flex-col sm:flex-row justify-between items-center gap-5">
-
           <p className="text-gray-500 text-sm text-center">
-            © {new Date().getFullYear()} Jobaora.
-            All rights reserved.
+            © {new Date().getFullYear()} Jobaora. All rights reserved.
           </p>
 
-          <div className="flex gap-5 text-sm text-gray-500">
-
-            <Link
-              to="/privacy"
-              onClick={scrollToTop}
-              className="hover:text-blue-600 transition"
-            >
-              Privacy Policy
-            </Link>
-
-            <Link
-              to="/terms"
-              onClick={scrollToTop}
-              className="hover:text-blue-600 transition"
-            >
-              Terms & Conditions
-            </Link>
-
-          </div>
-
-          {/* Back To Top */}
           <button
             onClick={scrollToTop}
-            className="flex items-center gap-2 text-sm font-medium text-blue-600 hover:text-blue-800 hover:-translate-y-1 transition-all duration-300"
+            className="flex items-center gap-2 text-sm font-medium text-blue-600 hover:text-blue-800 hover:-translate-y-1 transition-all duration-300 cursor-pointer"
           >
             Back to Top ↑
           </button>
-
         </div>
-
       </div>
     </footer>
   )

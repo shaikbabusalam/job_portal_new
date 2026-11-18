@@ -1,570 +1,516 @@
-import React, { useContext, useEffect, useState } from 'react'
-import { assets } from '../assets/assets'
-import { AppContext } from '../context/AppContext'
-import axios from 'axios'
-import { toast } from 'react-toastify'
-import Loading from '../components/Loading'
+import React, { useEffect, useState, useContext, useRef } from 'react';
+import { assets } from '../assets/assets';
+import { AppContext } from '../context/AppContext';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+import { useNavigate } from 'react-router-dom';
+import Loading from '../components/Loading';
 
 const ViewApplications = () => {
-  const { backendUrl, companyToken } = useContext(AppContext)
+  const { backendUrl, companyToken, companyData } = useContext(AppContext);
+  const navigate = useNavigate();
 
-  const [applicants, setApplicants] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [search, setSearch] = useState('')
-  const [jobFilter, setJobFilter] = useState('All Jobs')
+  const [applicants, setApplicants] = useState([]);
+  const [interviews, setInterviews] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [updatingId, setUpdatingId] = useState(null);
+  const [loadingChatId, setLoadingChatId] = useState(null);
 
-  const [interviewDate, setInterviewDate] = useState('')
-  const [interviewTime, setInterviewTime] = useState('')
-  const [interviewNote, setInterviewNote] = useState('')
-  const [selectedApplicant, setSelectedApplicant] = useState('')
+  const [scheduleModalApp, setScheduleModalApp] = useState(null);
+  const [editingInterview, setEditingInterview] = useState(null);
+  const [interviewDate, setInterviewDate] = useState('');
+  const [interviewTime, setInterviewTime] = useState('');
+  const [interviewNote, setInterviewNote] = useState('');
+  const [scheduling, setScheduling] = useState(false);
 
-  const [interviews, setInterviews] = useState([])
+  const isMutatingRef = useRef(false);
+  const token = companyToken || localStorage.getItem('companyToken');
 
-  // Fetch company job applications and database interviews
-  const fetchCompanyData = async () => {
+  const fetchCompanyData = async (silent = false) => {
+    if (!token) {
+      setLoading(false);
+      return;
+    }
+
+    if (silent && isMutatingRef.current) return;
+
     try {
-      setLoading(true)
-      const [applicantsRes, interviewsRes] = await Promise.all([
-        axios.get(backendUrl + '/api/company/applicants', {
-          headers: { token: companyToken }
-        }),
-        axios.get(backendUrl + '/api/company/interviews', {
-          headers: { token: companyToken }
-        })
-      ])
+      if (!silent) setLoading(true);
+      const [appsRes, interviewsRes] = await Promise.all([
+        axios.get(`${backendUrl}/api/company/applicants`, { headers: { token } }),
+        axios.get(`${backendUrl}/api/company/interviews`, { headers: { token } }),
+      ]);
 
-      if (applicantsRes.data.success) {
-        setApplicants(applicantsRes.data.applications.reverse())
-      } else {
-        toast.error(applicantsRes.data.message)
-      }
+      if (!isMutatingRef.current) {
+        if (appsRes.data.success) {
+          setApplicants((appsRes.data.applications || []).slice().reverse());
+        } else if (!silent) {
+          toast.error(appsRes.data.message);
+        }
 
-      if (interviewsRes.data.success) {
-        setInterviews(interviewsRes.data.interviews)
-      } else {
-        toast.error(interviewsRes.data.message)
+        if (interviewsRes.data.success) {
+          setInterviews(interviewsRes.data.interviews || []);
+        }
       }
     } catch (error) {
-      toast.error(error.response?.data?.message || error.message)
+      if (!silent) toast.error(error.response?.data?.message || error.message);
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false);
     }
-  }
-
-  // Update application status (Accept / Reject)
-  const changeJobApplicationStatus = async (id, status) => {
-    try {
-      const { data } = await axios.post(
-        backendUrl + '/api/company/change-status',
-        { id, status },
-        { headers: { token: companyToken } }
-      )
-
-      if (data.success) {
-        toast.success(data.message)
-        fetchCompanyData()
-      } else {
-        toast.error(data.message)
-      }
-    } catch (error) {
-      toast.error(error.response?.data?.message || error.message)
-    }
-  }
+  };
 
   useEffect(() => {
-    if (companyToken) {
-      fetchCompanyData()
-    }
-  }, [companyToken])
+    fetchCompanyData(false);
+    const interval = setInterval(() => fetchCompanyData(true), 4000);
+    return () => clearInterval(interval);
+  }, [token, backendUrl]);
 
-  // Get unique job titles for filter dropdown
-  const jobTitles = [...new Set(applicants.map(applicant => applicant.jobId?.title).filter(Boolean))]
+  const handleChangeStatus = async (applicationId, status) => {
+    const previousApplicants = applicants;
+    isMutatingRef.current = true;
+    setUpdatingId(applicationId);
 
-  // Search and filter applicants
-  const filteredApplications = applicants.filter(applicant => {
-    if (!applicant.jobId || !applicant.userId) return false
-
-    const searchText = search.toLowerCase()
-    const userName = applicant.userId?.name || ''
-    const jobTitle = applicant.jobId?.title || ''
-    const location = applicant.jobId?.location || ''
-
-    const matchesSearch =
-      userName.toLowerCase().includes(searchText) ||
-      jobTitle.toLowerCase().includes(searchText) ||
-      location.toLowerCase().includes(searchText)
-
-    const matchesJob =
-      jobFilter === 'All Jobs' ||
-      jobTitle === jobFilter
-
-    return matchesSearch && matchesJob
-  })
-
-  // Schedule interview handler with database persistence
-  const handleScheduleInterview = async (e) => {
-    e.preventDefault()
-
-    if (!selectedApplicant || !interviewDate || !interviewTime) {
-      return toast.error('Please fill in all interview details.')
+    if (status === 'Rejected') {
+      setApplicants((prev) => prev.filter((item) => item._id !== applicationId));
+      setInterviews((prev) =>
+        prev.filter((item) => String(item.applicationId?._id || item.applicationId) !== String(applicationId))
+      );
+    } else {
+      setApplicants((prev) =>
+        prev.map((item) =>
+          item._id === applicationId ? { ...item, status: 'Accepted' } : item
+        )
+      );
     }
 
     try {
       const { data } = await axios.post(
-        backendUrl + '/api/company/schedule-interview',
+        `${backendUrl}/api/company/change-status`,
+        { id: applicationId, status },
+        { headers: { token } }
+      );
+
+      if (data.success) {
+        if (status === 'Rejected') {
+          toast.info('Application rejected and removed');
+        } else {
+          toast.success('Application Accepted');
+        }
+      } else {
+        setApplicants(previousApplicants);
+        toast.error(data.message);
+      }
+    } catch (error) {
+      setApplicants(previousApplicants);
+      toast.error(error.response?.data?.message || error.message);
+    } finally {
+      setUpdatingId(null);
+      isMutatingRef.current = false;
+    }
+  };
+
+  const handleRecruiterOpenChat = async (jobId, applicantId, companyId) => {
+    try {
+      setLoadingChatId(String(jobId) + String(applicantId));
+
+      const response = await axios.post(
+        `${backendUrl}/api/chat/room`,
         {
-          applicationId: selectedApplicant,
-          date: interviewDate,
-          time: interviewTime,
-          note: interviewNote
+          jobId,
+          applicantId,
+          recruiterId: companyId || companyData?._id || '',
         },
-        { headers: { token: companyToken } }
-      )
+        { headers: { token } }
+      );
 
-      if (data.success) {
-        toast.success(data.message)
-        fetchCompanyData()
-        setInterviewDate('')
-        setInterviewTime('')
-        setInterviewNote('')
-        setSelectedApplicant('')
+      if (response.data.success && response.data.chat?._id) {
+        navigate(`/chat/${response.data.chat._id}?role=recruiter`);
       } else {
-        toast.error(data.message)
+        toast.error(response.data.message || 'Could not open chat room.');
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error opening chat room.');
+    } finally {
+      setLoadingChatId(null);
+    }
+  };
+
+  const openScheduleModal = (applicant) => {
+    setEditingInterview(null);
+    setScheduleModalApp(applicant);
+    setInterviewDate('');
+    setInterviewTime('');
+    setInterviewNote('');
+  };
+
+  const openEditInterviewModal = (interview) => {
+    setScheduleModalApp(null);
+    setEditingInterview(interview);
+    setInterviewDate(interview.date || '');
+    setInterviewTime(interview.time || '');
+    setInterviewNote(interview.note || '');
+  };
+
+  const closeInterviewModal = () => {
+    setScheduleModalApp(null);
+    setEditingInterview(null);
+    setInterviewDate('');
+    setInterviewTime('');
+    setInterviewNote('');
+  };
+
+  const handleSaveInterview = async (e) => {
+    e.preventDefault();
+    if ((!scheduleModalApp && !editingInterview) || !interviewDate || !interviewTime) return;
+
+    try {
+      setScheduling(true);
+      isMutatingRef.current = true;
+
+      if (editingInterview) {
+        const previousInterviews = interviews;
+        setInterviews((prev) =>
+          prev.map((item) =>
+            item._id === editingInterview._id
+              ? { ...item, date: interviewDate, time: interviewTime, note: interviewNote.trim() }
+              : item
+          )
+        );
+
+        const { data } = await axios.post(
+          `${backendUrl}/api/company/update-interview`,
+          {
+            id: editingInterview._id,
+            date: interviewDate,
+            time: interviewTime,
+            note: interviewNote.trim(),
+          },
+          { headers: { token } }
+        );
+
+        if (data.success) {
+          toast.success(data.message || 'Interview updated!');
+          closeInterviewModal();
+        } else {
+          setInterviews(previousInterviews);
+          toast.error(data.message);
+        }
+      } else {
+        const { data } = await axios.post(
+          `${backendUrl}/api/company/schedule-interview`,
+          {
+            applicationId: scheduleModalApp._id,
+            date: interviewDate,
+            time: interviewTime,
+            note: interviewNote.trim(),
+          },
+          { headers: { token } }
+        );
+
+        if (data.success) {
+          toast.success(data.message || 'Interview scheduled!');
+          closeInterviewModal();
+          isMutatingRef.current = false;
+          fetchCompanyData(true);
+        } else {
+          toast.error(data.message);
+        }
       }
     } catch (error) {
-      toast.error(error.response?.data?.message || error.message)
+      toast.error(error.response?.data?.message || error.message);
+    } finally {
+      setScheduling(false);
+      isMutatingRef.current = false;
     }
-  }
+  };
 
-  // Remove scheduled interview from database
-  const removeInterview = async (id) => {
+  const handleDeleteInterview = async (id) => {
+    const previousInterviews = interviews;
+    isMutatingRef.current = true;
+    setInterviews((prev) => prev.filter((item) => item._id !== id));
+
     try {
       const { data } = await axios.post(
-        backendUrl + '/api/company/delete-interview',
+        `${backendUrl}/api/company/delete-interview`,
         { id },
-        { headers: { token: companyToken } }
-      )
-
+        { headers: { token } }
+      );
       if (data.success) {
-        toast.info(data.message)
-        fetchCompanyData()
+        toast.success('Interview removed');
       } else {
-        toast.error(data.message)
+        setInterviews(previousInterviews);
+        toast.error(data.message);
       }
     } catch (error) {
-      toast.error(error.response?.data?.message || error.message)
+      setInterviews(previousInterviews);
+      toast.error(error.response?.data?.message || error.message);
+    } finally {
+      isMutatingRef.current = false;
     }
-  }
+  };
 
-  if (loading) {
-    return <Loading />
-  }
+  if (loading) return <Loading />;
+
+  const activeApplicants = applicants.filter(
+    (item) => item.jobId && item.userId && item.status?.trim().toLowerCase() !== 'rejected'
+  );
+
+  const isModalOpen = Boolean(scheduleModalApp || editingInterview);
+  const modalCandidateName = editingInterview
+    ? editingInterview.userId?.name
+    : scheduleModalApp?.userId?.name;
+  const modalRoleTitle = editingInterview
+    ? editingInterview.jobId?.title
+    : scheduleModalApp?.jobId?.title;
 
   return (
-    <div className='container mx-auto p-4 md:p-6'>
-
-      {/* Page heading */}
-      <div className='mb-6'>
-        <h1 className='text-2xl font-semibold text-gray-800'>
-          View Applications
-        </h1>
-        <p className='text-sm text-gray-500 mt-1'>
-          Manage applicants and schedule interviews.
+    <div className='w-full max-w-6xl mx-auto px-1 sm:px-4 my-3 sm:my-6 overflow-hidden'>
+      <div className='mb-6 sm:mb-8'>
+        <h2 className='text-xl sm:text-2xl font-bold text-gray-800'>View Applications</h2>
+        <p className='text-xs sm:text-sm text-gray-500 mt-1'>
+          Accept candidates to unlock direct chat and schedule or edit interviews. Use the scrollbar below to view all columns.
         </p>
       </div>
 
-      {/* Search and filters */}
-      <div className='max-w-6xl bg-white border border-gray-200 rounded-lg p-4 mb-5'>
-        <div className='flex flex-col md:flex-row gap-3 justify-between'>
+      {/* Visible Horizontal Scroller */}
+      <div className='w-full table-scroll-x bg-white rounded-2xl border border-gray-200 shadow-sm mb-10 pb-1'>
+        <table className='w-full min-w-[920px]'>
+          <thead className='bg-gray-50'>
+            <tr>
+              <th className='py-4 px-5 text-left text-sm font-semibold text-gray-600 whitespace-nowrap'>#</th>
+              <th className='py-4 px-5 text-left text-sm font-semibold text-gray-600 whitespace-nowrap'>User name</th>
+              <th className='py-4 px-5 text-left text-sm font-semibold text-gray-600 whitespace-nowrap'>Job Title</th>
+              <th className='py-4 px-5 text-left text-sm font-semibold text-gray-600 whitespace-nowrap'>Location</th>
+              <th className='py-4 px-5 text-left text-sm font-semibold text-gray-600 whitespace-nowrap'>Resume</th>
+              <th className='py-4 px-5 text-center text-sm font-semibold text-gray-600 whitespace-nowrap'>Action / Chat</th>
+            </tr>
+          </thead>
+          <tbody>
+            {activeApplicants.map((applicant, index) => {
+              const isAccepted = applicant.status?.trim().toLowerCase() === 'accepted';
+              const jobId = applicant.jobId?._id || applicant.jobId;
+              const applicantId = applicant.userId?._id || applicant.userId;
+              const companyId =
+                applicant.companyId?._id ||
+                applicant.companyId ||
+                applicant.jobId?.companyId ||
+                companyData?._id;
 
-          <div className='relative flex-1'>
-            <span className='absolute left-3 top-1/2 -translate-y-1/2 text-gray-400'>
-              <svg
-                xmlns='http://www.w3.org/2000/svg'
-                className='w-5 h-5'
-                fill='none'
-                viewBox='0 0 24 24'
-                stroke='currentColor'
-                strokeWidth={2}
-              >
-                <circle cx='11' cy='11' r='7' />
-                <path d='m20 20-4-4' />
-              </svg>
-            </span>
-
-            <input
-              type='text'
-              placeholder='Search by name, job title or location...'
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className='w-full border border-gray-200 rounded-md pl-10 pr-4 py-2.5 text-sm outline-none focus:border-blue-500'
-            />
-          </div>
-
-          <select
-            value={jobFilter}
-            onChange={(e) => setJobFilter(e.target.value)}
-            className='border border-gray-200 rounded-md px-4 py-2.5 text-sm outline-none focus:border-blue-500 bg-white'
-          >
-            <option value='All Jobs'>All Jobs</option>
-            {jobTitles.map((job, index) => (
-              <option key={index} value={job}>
-                {job}
-              </option>
-            ))}
-          </select>
-
-        </div>
-
-        <div className='flex justify-between items-center mt-3 text-sm text-gray-500'>
-          <p>
-            Showing {filteredApplications.length} of {applicants.length} applications
-          </p>
-
-          <button
-            onClick={() => {
-              setSearch('')
-              setJobFilter('All Jobs')
-            }}
-            className='text-blue-600 hover:underline'
-          >
-            Clear filters
-          </button>
-        </div>
-      </div>
-
-      {/* Applications table */}
-      <div className='max-w-6xl bg-white border border-gray-200 rounded-lg overflow-visible'>
-        <div className='overflow-x-auto rounded-lg'>
-          <table className='w-full border-collapse text-left'>
-            <thead>
-              <tr className='border-b border-gray-200 bg-gray-50'>
-                <th className='px-4 py-4 text-sm font-semibold text-gray-700'>#</th>
-                <th className='px-4 py-4 text-sm font-semibold text-gray-700'>User name</th>
-                <th className='px-4 py-4 text-sm font-semibold text-gray-700'>Job Title</th>
-                <th className='px-4 py-4 text-sm font-semibold text-gray-700'>Location</th>
-                <th className='px-4 py-4 text-sm font-semibold text-gray-700'>Resume</th>
-                <th className='px-4 py-4 text-sm font-semibold text-gray-700'>Action</th>
-              </tr>
-            </thead>
-
-            <tbody>
-              {filteredApplications.map((applicant, index) => {
-                const status = applicant.status || 'Pending'
-
-                return (
-                  <tr
-                    key={applicant._id || index}
-                    className='border-b border-gray-200 last:border-0 hover:bg-gray-50'
-                  >
-                    <td className='px-4 py-4 text-sm text-gray-600'>
-                      {index + 1}
-                    </td>
-
-                    <td className='px-4 py-4'>
-                      <div className='flex items-center gap-2'>
-                        <img
-                          className='w-8 h-8 rounded-full object-cover border border-gray-200'
-                          src={applicant.userId?.image || assets.profile_img}
-                          alt='User'
-                        />
-                        <div>
-                          <p className='text-sm font-medium text-gray-800 whitespace-nowrap'>
-                            {applicant.userId?.name || 'Applicant'}
-                          </p>
-                          <span className={`text-xs font-semibold ${
-                            status === 'Accepted'
-                              ? 'text-green-600'
-                              : status === 'Rejected'
-                              ? 'text-red-500'
-                              : 'text-orange-500'
+              return (
+                <tr key={applicant._id || index} className='border-t border-gray-100 hover:bg-gray-50 transition'>
+                  <td className='py-4 px-5 text-sm text-gray-600 whitespace-nowrap'>{index + 1}</td>
+                  <td className='py-4 px-5 whitespace-nowrap'>
+                    <div className='flex items-center gap-3'>
+                      <img
+                        src={applicant.userId?.image || assets.profile_icon}
+                        alt=''
+                        className='w-10 h-10 rounded-full object-cover shrink-0'
+                      />
+                      <div>
+                        <span className='font-medium text-gray-800'>
+                          {applicant.userId?.name || 'Applicant'}
+                        </span>
+                        <div className='text-xs mt-0.5'>
+                          <span className={`inline-block px-2 py-0.5 rounded-full font-semibold transition-colors ${
+                            isAccepted
+                              ? 'bg-emerald-50 text-emerald-700'
+                              : 'bg-amber-50 text-amber-700'
                           }`}>
-                            {status}
+                            {applicant.status || 'Pending'}
                           </span>
                         </div>
                       </div>
-                    </td>
-
-                    <td className='px-4 py-4 text-sm text-gray-600 whitespace-nowrap'>
-                      {applicant.jobId?.title || 'N/A'}
-                    </td>
-
-                    <td className='px-4 py-4 text-sm text-gray-600 whitespace-nowrap'>
-                      {applicant.jobId?.location || 'Remote'}
-                    </td>
-
-                    <td className='px-4 py-4'>
-                      {applicant.userId?.resume ? (
-                        <a
-                          href={applicant.userId.resume}
-                          target='_blank'
-                          rel='noopener noreferrer'
-                          className='inline-flex items-center gap-1 bg-blue-50 text-blue-600 px-3 py-2 rounded text-sm hover:bg-blue-100 transition'
-                        >
-                          Resume
-                          <img
-                            className='w-3 h-3'
-                            src={assets.resume_download_icon}
-                            alt='Download'
-                          />
-                        </a>
-                      ) : (
-                        <span className='text-xs text-gray-400'>Not Available</span>
-                      )}
-                    </td>
-
-                    <td className='py-2 px-4 border-b relative'>
-                      {applicant.status === "Pending" ? (
-                        <div className='relative inline-block text-left group'>
-                          <button className='text-gray-500 action-button px-2 py-1 font-bold rounded hover:bg-gray-100'>...</button>
-                          <div className='z-10 hidden absolute right-0 md:left-0 top-full flex-col bg-white border border-gray-200 rounded shadow-md group-hover:flex min-w-28'>
-                            <button
-                              onClick={() => changeJobApplicationStatus(applicant._id, 'Accepted')}
-                              className='px-3 py-2 text-left text-sm text-green-600 hover:bg-green-50 transition'
-                            >
-                              Accept
-                            </button>
-                            <button
-                              onClick={() => changeJobApplicationStatus(applicant._id, 'Rejected')}
-                              className='px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50 transition'
-                            >
-                              Reject
-                            </button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className={`text-xs font-semibold px-3 py-1 rounded-full inline-block ${
-                          applicant.status === 'Accepted' ? 'text-green-600 bg-green-50' : 'text-red-600 bg-red-50'
-                        }`}>
-                          {applicant.status}
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                )
-              })}
-
-              {filteredApplications.length === 0 && (
-                <tr>
-                  <td colSpan='6' className='text-center py-10 text-gray-500 text-sm'>
-                    No applications found.
+                    </div>
                   </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Interview planner */}
-      <div className='max-w-6xl mt-8'>
-        <div className='mb-4'>
-          <h2 className='text-xl font-semibold text-gray-800'>
-            Interview Planner
-          </h2>
-          <p className='text-sm text-gray-500 mt-1'>
-            Schedule interviews with shortlisted candidates.
-          </p>
-        </div>
-
-        <div className='grid grid-cols-1 lg:grid-cols-2 gap-5'>
-
-          {/* Schedule interview form */}
-          <div className='bg-white border border-gray-200 rounded-lg p-5'>
-            <div className='flex items-center gap-3 mb-5'>
-              <div className='bg-blue-50 text-blue-600 p-3 rounded-lg'>
-                <svg
-                  xmlns='http://www.w3.org/2000/svg'
-                  className='w-6 h-6'
-                  fill='none'
-                  viewBox='0 0 24 24'
-                  stroke='currentColor'
-                  strokeWidth={1.8}
-                >
-                  <rect x='3' y='5' width='18' height='16' rx='2' />
-                  <path d='M16 3v4M8 3v4M3 10h18' />
-                </svg>
-              </div>
-
-              <div>
-                <h3 className='font-semibold text-gray-800'>
-                  Schedule an interview
-                </h3>
-                <p className='text-xs text-gray-500'>
-                  Add a new candidate interview
-                </p>
-              </div>
-            </div>
-
-            <form onSubmit={handleScheduleInterview} className='space-y-4'>
-              <div>
-                <label className='block text-sm font-medium text-gray-700 mb-2'>
-                  Select Applicant
-                </label>
-                <select
-                  required
-                  value={selectedApplicant}
-                  onChange={(e) => setSelectedApplicant(e.target.value)}
-                  className='w-full border border-gray-200 rounded-md px-3 py-2.5 text-sm outline-none focus:border-blue-500 bg-white'
-                >
-                  <option value=''>Choose an applicant</option>
-                  {applicants
-                    .filter(applicant => applicant.jobId && applicant.userId && applicant.status !== 'Rejected')
-                    .map(applicant => (
-                      <option key={applicant._id} value={String(applicant._id)}>
-                        {applicant.userId?.name || 'Candidate'} - {applicant.jobId?.title || 'Position'}
-                      </option>
-                    ))}
-                </select>
-              </div>
-
-              <div className='grid grid-cols-1 sm:grid-cols-2 gap-4'>
-                <div>
-                  <label className='block text-sm font-medium text-gray-700 mb-2'>
-                    Interview Date
-                  </label>
-                  <input
-                    type='date'
-                    required
-                    min={new Date().toISOString().split('T')[0]}
-                    value={interviewDate}
-                    onChange={(e) => setInterviewDate(e.target.value)}
-                    className='w-full border border-gray-200 rounded-md px-3 py-2.5 text-sm outline-none focus:border-blue-500'
-                  />
-                </div>
-
-                <div>
-                  <label className='block text-sm font-medium text-gray-700 mb-2'>
-                    Interview Time
-                  </label>
-                  <input
-                    type='time'
-                    required
-                    value={interviewTime}
-                    onChange={(e) => setInterviewTime(e.target.value)}
-                    className='w-full border border-gray-200 rounded-md px-3 py-2.5 text-sm outline-none focus:border-blue-500'
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className='block text-sm font-medium text-gray-700 mb-2'>
-                  Interview Notes (Optional)
-                </label>
-                <textarea
-                  rows='3'
-                  value={interviewNote}
-                  onChange={(e) => setInterviewNote(e.target.value)}
-                  placeholder='Add interview instructions or notes...'
-                  className='w-full border border-gray-200 rounded-md px-3 py-2.5 text-sm outline-none focus:border-blue-500 resize-none'
-                />
-              </div>
-
-              <button
-                type='submit'
-                className='w-full bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-md text-sm font-medium transition'
-              >
-                + Schedule Interview
-              </button>
-            </form>
-          </div>
-
-          {/* Upcoming interviews */}
-          <div className='bg-white border border-gray-200 rounded-lg p-5'>
-            <div className='flex justify-between items-center mb-5'>
-              <div>
-                <h3 className='font-semibold text-gray-800'>
-                  Upcoming Interviews
-                </h3>
-                <p className='text-xs text-gray-500 mt-1'>
-                  Your scheduled candidate interviews
-                </p>
-              </div>
-
-              <span className='bg-blue-50 text-blue-600 text-xs px-3 py-1 rounded-full font-medium'>
-                {interviews.length} Scheduled
-              </span>
-            </div>
-
-            {interviews.length === 0 ? (
-              <div className='flex flex-col items-center justify-center text-center py-10'>
-                <div className='bg-gray-50 p-4 rounded-full mb-3'>
-                  <svg
-                    xmlns='http://www.w3.org/2000/svg'
-                    className='w-8 h-8 text-gray-400'
-                    fill='none'
-                    viewBox='0 0 24 24'
-                    stroke='currentColor'
-                    strokeWidth={1.5}
-                  >
-                    <rect x='3' y='5' width='18' height='16' rx='2' />
-                    <path d='M16 3v4M8 3v4M3 10h18' />
-                  </svg>
-                </div>
-                <p className='text-sm font-medium text-gray-700'>
-                  No interviews scheduled
-                </p>
-                <p className='text-xs text-gray-400 mt-1'>
-                  Your scheduled interviews will appear here.
-                </p>
-              </div>
-            ) : (
-              <div className='space-y-3 max-h-96 overflow-y-auto'>
-                {interviews
-                  .slice()
-                  .sort((a, b) => new Date(`${a.date}T${a.time}`) - new Date(`${b.date}T${b.time}`))
-                  .map(interview => (
-                    <div
-                      key={interview._id}
-                      className='border border-gray-100 rounded-lg p-4 hover:border-blue-200 transition'
-                    >
-                      <div className='flex justify-between items-start gap-3'>
-                        <div>
-                          <h4 className='text-sm font-semibold text-gray-800'>
-                            {interview.userId?.name || 'Candidate'}
-                          </h4>
-                          <p className='text-xs text-gray-500 mt-1'>
-                            {interview.jobId?.title || 'Job Position'}
-                          </p>
-                        </div>
-
+                  <td className='py-4 px-5 text-sm text-gray-700 whitespace-nowrap'>
+                    {applicant.jobId?.title || 'Position'}
+                  </td>
+                  <td className='py-4 px-5 text-sm text-gray-500 whitespace-nowrap'>
+                    {applicant.jobId?.location || 'Location'}
+                  </td>
+                  <td className='py-4 px-5 text-sm whitespace-nowrap'>
+                    {applicant.userId?.resume ? (
+                      <a
+                        href={applicant.userId.resume}
+                        target='_blank'
+                        rel='noopener noreferrer'
+                        className='inline-flex items-center gap-1.5 text-blue-600 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg text-xs font-medium transition whitespace-nowrap'
+                      >
+                        Resume 📄
+                      </a>
+                    ) : (
+                      <span className='text-xs text-gray-400 italic'>No resume</span>
+                    )}
+                  </td>
+                  <td className='py-4 px-5 text-center whitespace-nowrap'>
+                    {isAccepted ? (
+                      <div className='inline-flex items-center gap-2'>
                         <button
-                          onClick={() => removeInterview(interview._id)}
-                          className='text-gray-400 hover:text-red-500 text-sm font-bold cursor-pointer'
-                          title='Remove interview'
+                          onClick={() => handleRecruiterOpenChat(jobId, applicantId, companyId)}
+                          disabled={loadingChatId === String(jobId) + String(applicantId)}
+                          className='inline-flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium px-3.5 py-2 rounded-lg transition shadow-sm disabled:opacity-50 cursor-pointer whitespace-nowrap'
+                          title='Chat with Applicant'
                         >
-                          ✕
+                          💬 {loadingChatId === String(jobId) + String(applicantId) ? 'Opening...' : 'Chat'}
+                        </button>
+                        <button
+                          onClick={() => openScheduleModal(applicant)}
+                          className='inline-flex items-center gap-1 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 text-xs font-medium px-3.5 py-2 rounded-lg transition cursor-pointer whitespace-nowrap'
+                          title='Schedule Interview'
+                        >
+                          📅 Interview
                         </button>
                       </div>
-
-                      <div className='flex flex-wrap gap-4 mt-3 text-xs text-gray-600'>
-                        <span className='flex items-center gap-1'>
-                          <span className='text-blue-600'>📅</span>
-                          {interview.date}
-                        </span>
-
-                        <span className='flex items-center gap-1'>
-                          <span className='text-blue-600'>🕒</span>
-                          {interview.time}
-                        </span>
+                    ) : (
+                      <div className='inline-flex items-center gap-2'>
+                        <button
+                          onClick={() => handleChangeStatus(applicant._id, 'Accepted')}
+                          disabled={updatingId === applicant._id}
+                          className='bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium px-3.5 py-1.5 rounded-lg transition cursor-pointer disabled:opacity-50 whitespace-nowrap'
+                        >
+                          {updatingId === applicant._id ? '...' : 'Accept'}
+                        </button>
+                        <button
+                          onClick={() => handleChangeStatus(applicant._id, 'Rejected')}
+                          disabled={updatingId === applicant._id}
+                          className='bg-rose-50 hover:bg-rose-100 text-rose-600 text-xs font-medium px-3.5 py-1.5 rounded-lg transition cursor-pointer disabled:opacity-50 whitespace-nowrap'
+                        >
+                          Reject
+                        </button>
                       </div>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
 
-                      {interview.note && (
-                        <p className='text-xs text-gray-500 mt-3 border-t pt-2'>
-                          {interview.note}
-                        </p>
-                      )}
-                    </div>
-                  ))}
-              </div>
-            )}
+        {activeApplicants.length === 0 && (
+          <div className='text-center py-12'>
+            <p className='text-gray-500'>No job applications found.</p>
           </div>
-
-        </div>
+        )}
       </div>
 
-    </div>
-  )
-}
+      {/* Scheduled Interviews Section */}
+      {interviews.length > 0 && (
+        <div>
+          <h3 className='text-base sm:text-lg font-bold text-gray-800 mb-4'>
+            Scheduled Interviews ({interviews.length})
+          </h3>
+          <div className='grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4'>
+            {interviews.map((item) => (
+              <div key={item._id} className='bg-white border border-gray-200 rounded-2xl p-4 shadow-sm flex flex-col justify-between'>
+                <div>
+                  <div className='flex items-center justify-between gap-2 mb-2'>
+                    <p className='font-semibold text-gray-800 text-sm truncate'>
+                      {item.userId?.name || 'Candidate'}
+                    </p>
+                    <div className='flex items-center gap-3 shrink-0'>
+                      <button
+                        onClick={() => openEditInterviewModal(item)}
+                        className='text-xs text-indigo-600 hover:underline font-medium cursor-pointer'
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => handleDeleteInterview(item._id)}
+                        className='text-xs text-rose-500 hover:underline font-medium cursor-pointer'
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                  <p className='text-xs text-indigo-600 font-medium mb-2 truncate'>
+                    {item.jobId?.title || 'Role'}
+                  </p>
+                  <div className='text-xs text-gray-600 bg-gray-50 p-2.5 rounded-lg space-y-1'>
+                    <p>📅 Date: <strong>{item.date}</strong></p>
+                    <p>🕒 Time: <strong>{item.time}</strong></p>
+                    {item.note && <p className='italic text-gray-500 break-words'>"{item.note}"</p>}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
-export default ViewApplications
+      {/* Schedule / Edit Interview Modal */}
+      {isModalOpen && (
+        <div className='fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs px-4'>
+          <div className='bg-white rounded-2xl max-w-md w-full p-5 sm:p-6 shadow-2xl max-h-[90dvh] overflow-y-auto'>
+            <div className='flex items-center justify-between mb-4'>
+              <h3 className='text-lg font-bold text-gray-800'>
+                {editingInterview ? 'Edit Interview' : 'Schedule Interview'}
+              </h3>
+              <button
+                onClick={closeInterviewModal}
+                className='text-gray-400 hover:text-gray-700 text-xl font-bold cursor-pointer'
+              >
+                ×
+              </button>
+            </div>
+            <p className='text-xs text-gray-500 mb-4'>
+              Candidate: <strong>{modalCandidateName || 'Candidate'}</strong> • Role: <strong>{modalRoleTitle || 'Role'}</strong>
+            </p>
+
+            <form onSubmit={handleSaveInterview} className='space-y-4'>
+              <div>
+                <label className='block text-xs font-medium text-gray-700 mb-1'>Date</label>
+                <input
+                  type='date'
+                  value={interviewDate}
+                  onChange={(e) => setInterviewDate(e.target.value)}
+                  className='w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-500'
+                  required
+                />
+              </div>
+              <div>
+                <label className='block text-xs font-medium text-gray-700 mb-1'>Time</label>
+                <input
+                  type='time'
+                  value={interviewTime}
+                  onChange={(e) => setInterviewTime(e.target.value)}
+                  className='w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-500'
+                  required
+                />
+              </div>
+              <div>
+                <label className='block text-xs font-medium text-gray-700 mb-1'>Meeting Link / Note (Optional)</label>
+                <textarea
+                  rows={3}
+                  value={interviewNote}
+                  onChange={(e) => setInterviewNote(e.target.value)}
+                  placeholder='e.g. Google Meet link or interview round details...'
+                  className='w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-500'
+                />
+              </div>
+              <div className='flex justify-end gap-2 pt-2'>
+                <button
+                  type='button'
+                  onClick={closeInterviewModal}
+                  className='px-4 py-2 text-sm border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 cursor-pointer'
+                >
+                  Cancel
+                </button>
+                <button
+                  type='submit'
+                  disabled={scheduling}
+                  className='px-5 py-2 text-sm bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg disabled:opacity-50 cursor-pointer'
+                >
+                  {scheduling
+                    ? (editingInterview ? 'Updating...' : 'Scheduling...')
+                    : (editingInterview ? 'Update Interview' : 'Confirm')}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default ViewApplications;

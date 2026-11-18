@@ -2,6 +2,7 @@ import User from '../models/user.js';
 import JobApplication from '../models/JobApplication.js';
 import Job from '../models/Job.js';
 import Interview from '../models/Interview.js';
+import { Chat } from '../models/chatModel.js';
 import { v2 as cloudinary } from 'cloudinary';
 import { clerkClient } from '@clerk/express';
 
@@ -85,6 +86,29 @@ export const getUserJobApplications = async (req, res) => {
         return res.json({ success: true, applications });
     } catch (error) {
         res.json({ success: false, message: error.message });
+    }
+};
+
+export const deleteUserApplication = async (req, res) => {
+    try {
+        const userId = getAuth(req)?.userId;
+        if (!userId) {
+            return res.json({ success: false, message: 'Unauthorized: Missing user ID' });
+        }
+
+        const { id } = req.body;
+        const application = await JobApplication.findOneAndDelete({ _id: id, userId });
+
+        if (!application) {
+            return res.json({ success: false, message: 'Application not found or unauthorized' });
+        }
+
+        await Interview.deleteMany({ applicationId: id, userId });
+        await Chat.deleteMany({ jobId: application.jobId, applicantId: String(userId) });
+
+        return res.json({ success: true, message: 'Application withdrawn successfully' });
+    } catch (error) {
+        return res.json({ success: false, message: error.message });
     }
 };
 

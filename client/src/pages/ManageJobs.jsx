@@ -1,27 +1,63 @@
-import React, { useEffect, useState, useContext } from 'react'
+import React, { useContext, useEffect, useState } from 'react'
 import moment from 'moment'
 import { useNavigate } from 'react-router-dom'
 import { AppContext } from '../context/AppContext'
 import axios from 'axios'
 import { toast } from 'react-toastify'
+import Loading from '../components/Loading'
 
 const ManageJobs = () => {
   const navigate = useNavigate()
+  const [jobs, setJobs] = useState(false)
   const { backendUrl, companyToken } = useContext(AppContext)
-  const [jobs, setJobs] = useState([])
 
-  // Fetch jobs posted by the company from backend
+  const token = companyToken || sessionStorage.getItem('companyToken')
+
   const fetchCompanyJobs = async () => {
     try {
       const { data } = await axios.get(backendUrl + '/api/company/list-jobs', {
-        headers: { token: companyToken }
+        headers: { token }
       })
-
       if (data.success) {
-        const jobList = data.jobsData || data.jobs || data.data || (Array.isArray(data) ? data : [])
-        setJobs(jobList.slice().reverse())
+        setJobs(data.jobsData.reverse())
       } else {
-        toast.error(data.message || 'Failed to fetch jobs')
+        toast.error(data.message)
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message)
+    }
+  }
+
+  const changeJobVisiblity = async (id) => {
+    try {
+      const { data } = await axios.post(
+        backendUrl + '/api/company/change-visibility',
+        { id },
+        { headers: { token } }
+      )
+      if (data.success) {
+        toast.success(data.message)
+        fetchCompanyJobs()
+      } else {
+        toast.error(data.message)
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message)
+    }
+  }
+
+  const handleDeleteJob = async (id) => {
+    try {
+      const { data } = await axios.post(
+        backendUrl + '/api/company/delete-job',
+        { id },
+        { headers: { token } }
+      )
+      if (data.success) {
+        toast.success(data.message || 'Job deleted')
+        setJobs((prev) => prev.filter((item) => item._id !== id))
+      } else {
+        toast.error(data.message)
       }
     } catch (error) {
       toast.error(error.response?.data?.message || error.message)
@@ -29,227 +65,93 @@ const ManageJobs = () => {
   }
 
   useEffect(() => {
-    if (companyToken) {
+    if (token) {
       fetchCompanyJobs()
     }
-  }, [companyToken])
+  }, [token])
 
-  // Add Job
-  const handleAddJob = () => {
-    navigate('/dashboard/add-job')
-  }
-
-  // Function to change Job Visibility with Console Debugging
-  const changeJobVisibility = async (id) => {
-    try {
-      const { data } = await axios.post(
-        backendUrl + '/api/company/change-visibility',
-        { id },
-        { headers: { token: companyToken } }
-      )
-
-      // DEBUG: Check your browser console (F12) to verify visibility toggle response
-      console.log("Visibility Toggle Response:", data)
-
-      if (data.success) {
-        toast.success(data.message || 'Job visibility updated successfully')
-        fetchCompanyJobs() // Re-fetch list to update UI state
-      } else {
-        toast.error(data.message || 'Failed to update visibility')
-      }
-    } catch (error) {
-      toast.error(error.response?.data?.message || error.message)
-    }
-  }
-
-  // Delete Job
-  const handleDelete = async (id) => {
-    if (window.confirm('Are you sure you want to delete this job?')) {
-      try {
-        const { data } = await axios.post(
-          backendUrl + '/api/company/delete-job',
-          { id },
-          { headers: { token: companyToken } }
-        )
-
-        if (data.success) {
-          toast.success(data.message || 'Job deleted successfully')
-          fetchCompanyJobs()
-        } else {
-          toast.error(data.message)
-        }
-      } catch (error) {
-        toast.error(error.response?.data?.message || error.message)
-      }
-    }
-  }
-
-  // Edit Job
-  const handleEdit = (job) => {
-    navigate('/dashboard/add-job', {
-      state: { job }
-    })
-  }
-
-  return (
-    <div className="min-h-screen bg-slate-50 px-4 py-8 md:px-8">
-
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
-        <div>
-          <h1 className="text-2xl md:text-3xl font-bold text-slate-800">
-            Manage Jobs
-          </h1>
-          <p className="text-sm text-slate-500 mt-2">
-            Manage, edit and track all your job postings.
-          </p>
-        </div>
-
-        <button
-          onClick={handleAddJob}
-          className="flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-5 py-3 rounded-xl text-sm font-semibold shadow-sm transition-all"
-        >
-          <span className="text-xl">+</span>
-          Add New Job
-        </button>
+  return jobs ? (
+    jobs.length === 0 ? (
+      <div className='flex items-center justify-center h-[70vh]'>
+        <p className='text-xl sm:text-2xl text-zinc-500'>No Jobs Available or posted</p>
       </div>
-
-      {/* Job Table */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="px-5 md:px-7 py-5 border-b border-slate-100">
-          <h2 className="text-lg font-semibold text-slate-800">
-            All Job Listings
-          </h2>
-          <p className="text-xs text-slate-500 mt-1">
-            {jobs.length} job postings available
+    ) : (
+      <div className='container p-2 sm:p-4 max-w-6xl mx-auto'>
+        <div className='mb-6'>
+          <h2 className='text-xl sm:text-2xl font-black text-zinc-900 dark:text-white'>Manage Jobs</h2>
+          <p className='text-xs sm:text-sm text-zinc-500 dark:text-zinc-400 mt-1'>
+            Toggle job visibility, view applicants, or remove postings. Use the scrollbar below to view all columns.
           </p>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[850px] text-left">
-            <thead className="bg-slate-50">
-              <tr className="text-xs uppercase tracking-wider text-slate-500">
-                <th className="px-6 py-4">#</th>
-                <th className="px-6 py-4">Job Title</th>
-                <th className="px-6 py-4">Date</th>
-                <th className="px-6 py-4">Location</th>
-                <th className="px-6 py-4">Applications</th>
-                <th className="px-6 py-4">Visibility</th>
-                <th className="px-6 py-4 text-center">Action</th>
+        {/* Visible Horizontal Scroller */}
+        <div className='w-full table-scroll-x bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl shadow-sm pb-1'>
+          <table className='w-full min-w-[860px] text-sm'>
+            <thead className='bg-zinc-50 dark:bg-zinc-950/60'>
+              <tr className='border-b border-zinc-200 dark:border-zinc-800'>
+                <th className='py-4 px-5 text-left font-semibold text-zinc-600 dark:text-zinc-300 whitespace-nowrap'>#</th>
+                <th className='py-4 px-5 text-left font-semibold text-zinc-600 dark:text-zinc-300 whitespace-nowrap'>Job Title</th>
+                <th className='py-4 px-5 text-left font-semibold text-zinc-600 dark:text-zinc-300 whitespace-nowrap'>Date</th>
+                <th className='py-4 px-5 text-left font-semibold text-zinc-600 dark:text-zinc-300 whitespace-nowrap'>Location</th>
+                <th className='py-4 px-5 text-center font-semibold text-zinc-600 dark:text-zinc-300 whitespace-nowrap'>Applicants</th>
+                <th className='py-4 px-5 text-center font-semibold text-zinc-600 dark:text-zinc-300 whitespace-nowrap'>Visible</th>
+                <th className='py-4 px-5 text-center font-semibold text-zinc-600 dark:text-zinc-300 whitespace-nowrap'>Action</th>
               </tr>
             </thead>
-
-            <tbody className="divide-y divide-slate-100">
+            <tbody>
               {jobs.map((job, index) => (
-                <tr
-                  key={job._id || job.id || index}
-                  className="hover:bg-blue-50/40 transition-colors"
-                >
-                  <td className="px-6 py-5 text-sm text-slate-400">
-                    {index + 1}
-                  </td>
-
-                  <td className="px-6 py-5">
-                    <p className="font-semibold text-slate-800 text-sm">
-                      {job.title}
-                    </p>
-                  </td>
-
-                  <td className="px-6 py-5 text-sm text-slate-500">
-                    {job.date ? moment(job.date).format('ll') : '-'}
-                  </td>
-
-                  <td className="px-6 py-5 text-sm text-slate-600">
-                    {job.location || '-'}
-                  </td>
-
-                  <td className="px-6 py-5">
-                    <span className="px-3 py-1.5 bg-blue-50 text-blue-700 rounded-lg text-sm font-semibold">
-                      {job.applicants || 0}
+                <tr key={job._id || index} className='text-zinc-700 dark:text-zinc-300 border-b border-zinc-100 dark:border-zinc-800/60 hover:bg-zinc-50 dark:hover:bg-zinc-800/40 transition'>
+                  <td className='py-4 px-5 whitespace-nowrap'>{index + 1}</td>
+                  <td className='py-4 px-5 font-semibold text-zinc-900 dark:text-white whitespace-nowrap'>{job.title}</td>
+                  <td className='py-4 px-5 text-zinc-500 whitespace-nowrap'>{moment(job.date).format('ll')}</td>
+                  <td className='py-4 px-5 text-zinc-500 whitespace-nowrap'>{job.location}</td>
+                  <td className='py-4 px-5 text-center whitespace-nowrap'>
+                    <span className='inline-block bg-violet-50 dark:bg-violet-950/60 text-violet-700 dark:text-violet-300 font-semibold px-3 py-1 rounded-full text-xs'>
+                      {job.applicants}
                     </span>
                   </td>
-
-                  <td className="px-6 py-5">
-                    <div className="flex items-center gap-3">
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={!!job.visible}
-                        onClick={() => changeJobVisibility(job._id || job.id)}
-                        className={`relative w-11 h-6 rounded-full transition-colors ${
-                          job.visible ? 'bg-blue-600' : 'bg-slate-300'
-                        }`}
-                      >
-                        <span
-                          className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${
-                            job.visible ? 'translate-x-5' : ''
-                          }`}
-                        />
-                      </button>
-
-                      <span className={`text-xs font-medium ${
-                        job.visible ? 'text-green-600' : 'text-slate-400'
-                      }`}>
-                        {job.visible ? 'Visible' : 'Hidden'}
-                      </span>
-                    </div>
+                  <td className='py-4 px-5 text-center whitespace-nowrap'>
+                    <input
+                      onChange={() => changeJobVisiblity(job._id)}
+                      className='scale-125 accent-violet-600 cursor-pointer'
+                      type='checkbox'
+                      checked={job.visible}
+                    />
                   </td>
-
-                  <td className="px-6 py-5 text-center">
-                    <div className="relative group inline-block">
+                  <td className='py-4 px-5 text-center whitespace-nowrap'>
+                    <div className='inline-flex items-center gap-2'>
                       <button
-                        type="button"
-                        className="w-9 h-9 rounded-lg text-slate-500 hover:text-blue-600 hover:bg-blue-50 text-xl"
+                        onClick={() => navigate('/dashboard/view-applications')}
+                        className='bg-blue-50 dark:bg-blue-950/60 hover:bg-blue-100 text-blue-600 dark:text-blue-400 text-xs font-semibold px-3 py-1.5 rounded-xl transition cursor-pointer whitespace-nowrap'
                       >
-                        ⋮
+                        Applicants
                       </button>
-
-                      <div className="hidden group-hover:flex group-focus-within:flex flex-col absolute right-0 top-full mt-1 bg-white shadow-xl border border-slate-100 rounded-xl z-20 w-32 overflow-hidden">
-                        <button
-                          onClick={() => handleEdit(job)}
-                          className="px-4 py-3 text-sm text-left text-slate-700 hover:bg-blue-50 hover:text-blue-600"
-                        >
-                          Edit
-                        </button>
-
-                        <button
-                          onClick={() => handleDelete(job._id || job.id)}
-                          className="px-4 py-3 text-sm text-left text-red-500 hover:bg-red-50"
-                        >
-                          Delete
-                        </button>
-                      </div>
+                      <button
+                        onClick={() => handleDeleteJob(job._id)}
+                        className='bg-rose-50 dark:bg-rose-950/60 hover:bg-rose-100 text-rose-600 dark:text-rose-400 text-xs font-semibold px-3 py-1.5 rounded-xl transition cursor-pointer whitespace-nowrap'
+                      >
+                        Delete
+                      </button>
                     </div>
                   </td>
                 </tr>
               ))}
-
-              {jobs.length === 0 && (
-                <tr>
-                  <td colSpan="7" className="py-16 text-center">
-                    <p className="text-slate-700 font-semibold">
-                      No jobs available
-                    </p>
-                    <button
-                      onClick={handleAddJob}
-                      className="mt-3 text-blue-600 font-semibold text-sm hover:underline"
-                    >
-                      + Add your first job
-                    </button>
-                  </td>
-                </tr>
-              )}
             </tbody>
           </table>
         </div>
 
-        <div className="px-5 py-4 bg-slate-50 border-t border-slate-100">
-          <p className="text-xs text-slate-400">
-            Synced with database server.
-          </p>
+        <div className='mt-6 flex justify-end'>
+          <button
+            onClick={() => navigate('/dashboard/add-job')}
+            className='bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white py-3 px-6 rounded-2xl text-xs sm:text-sm font-bold transition shadow-md cursor-pointer'
+          >
+            + Add new job
+          </button>
         </div>
       </div>
-    </div>
+    )
+  ) : (
+    <Loading />
   )
 }
 

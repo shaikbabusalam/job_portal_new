@@ -1,5 +1,7 @@
 import React, { useContext, useRef, useState } from 'react'
 import axios from 'axios'
+import { Link } from 'react-router-dom'
+import { useAuth, useUser } from '@clerk/clerk-react'
 import { toast } from 'react-toastify'
 import Navbar from '../components/Navbar'
 import { AppContext } from '../context/AppContext'
@@ -90,6 +92,8 @@ const ScoreRing = ({ score }) => {
 
 const ATSChecker = () => {
   const { backendUrl, jobs } = useContext(AppContext)
+  const { getToken } = useAuth()
+  const { isSignedIn } = useUser()
   const fileInputRef = useRef(null)
 
   const [file, setFile] = useState(null)
@@ -98,6 +102,8 @@ const ATSChecker = () => {
   const [selectedJobId, setSelectedJobId] = useState('')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)
+  const [aiFeedback, setAiFeedback] = useState(null)
+  const [aiLoading, setAiLoading] = useState(false)
 
   const handleFile = (selectedFile) => {
     if (!selectedFile) return
@@ -153,39 +159,67 @@ const ATSChecker = () => {
     setJobDescription(`${job.title}. ${plainText}`)
   }
 
-  const handleAnalyze = async () => {
+  const runAnalysis = async (withAi = false) => {
     if (!file) {
       setMessage('Please upload your resume first.')
       return
     }
 
-    setLoading(true)
+    if (withAi && !isSignedIn) {
+      setMessage('Please log in to get AI feedback.')
+      return
+    }
+
+    if (withAi) setAiLoading(true)
+    else setLoading(true)
     setMessage('')
 
     try {
       const formData = new FormData()
       formData.append('resume', file)
 
+      if (withAi) formData.append('ai', 'true')
+
       if (jobDescription.trim()) {
         formData.append('jobDescription', jobDescription.trim())
       }
 
-      const { data } = await axios.post(`${backendUrl}/api/ats/analyze`, formData)
+      const config = { timeout: withAi ? 150000 : 120000 }
+
+      if (withAi) {
+        const token = await getToken()
+        config.headers = { Authorization: `Bearer ${token}` }
+      }
+
+      const { data } = await axios.post(`${backendUrl}/api/ats/analyze`, formData, config)
 
       if (data.success) {
         setResult(data.analysis)
-        toast.success('Resume analysis complete!')
+
+        if (withAi) {
+          setAiFeedback(data.aiFeedback || null)
+          if (data.aiError) setMessage(data.aiError)
+          else toast.success('AI feedback ready!')
+        } else {
+          setAiFeedback(null)
+          toast.success('Resume analysis complete!')
+        }
       } else {
         setResult(null)
         setMessage(data.message)
       }
     } catch (error) {
-      setResult(null)
+      // Keep an existing score on screen if only the AI request failed
+      if (!withAi) setResult(null)
       setMessage(error.response?.data?.message || error.message)
     } finally {
       setLoading(false)
+      setAiLoading(false)
     }
   }
+
+  const handleAnalyze = () => runAnalysis(false)
+  const handleAiFeedback = () => runAnalysis(true)
 
   const hasJobMatch = result?.keywordMatch?.mode === 'job-description'
 
@@ -374,6 +408,101 @@ const ATSChecker = () => {
                       <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{label}</p>
                     </div>
                   ))}
+                </section>
+
+                {/* AI resume coach */}
+                <section className="rounded-2xl border border-indigo-200 dark:border-indigo-900 bg-white dark:bg-gray-900 p-6 md:p-8 shadow-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <h2 className="text-xl font-bold">✦ AI resume coach</h2>
+                      <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                        Personal advice, stronger bullet points and jobs on Jobaora that fit your resume.
+                      </p>
+                    </div>
+
+                    <button
+                      onClick={handleAiFeedback}
+                      disabled={aiLoading || loading}
+                      className="rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 px-5 py-2.5 text-sm font-semibold text-white hover:from-indigo-700 hover:to-purple-700 transition disabled:opacity-60"
+                    >
+                      {aiLoading ? 'Thinking...' : aiFeedback ? 'Regenerate' : 'Get AI feedback'}
+                    </button>
+                  </div>
+
+                  {!isSignedIn && (
+                    <p className="mt-3 text-xs text-gray-400">Log in to use AI feedback.</p>
+                  )}
+
+                  {aiFeedback && (
+                    <div className="mt-6 space-y-6">
+                      {aiFeedback.summary && (
+                        <p className="text-sm leading-6 text-gray-700 dark:text-gray-300">{aiFeedback.summary}</p>
+                      )}
+
+                      {aiFeedback.strengths.length > 0 && (
+                        <div>
+                          <h3 className="text-sm font-semibold text-green-700 dark:text-green-400">What is working</h3>
+                          <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-gray-600 dark:text-gray-300">
+                            {aiFeedback.strengths.map((item, index) => <li key={index}>{item}</li>)}
+                          </ul>
+                        </div>
+                      )}
+
+                      {aiFeedback.improvements.length > 0 && (
+                        <div>
+                          <h3 className="text-sm font-semibold text-amber-700 dark:text-amber-400">What to improve</h3>
+                          <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-gray-600 dark:text-gray-300">
+                            {aiFeedback.improvements.map((item, index) => <li key={index}>{item}</li>)}
+                          </ul>
+                        </div>
+                      )}
+
+                      {aiFeedback.rewrittenBullets.length > 0 && (
+                        <div>
+                          <h3 className="text-sm font-semibold">Stronger bullet points</h3>
+                          <div className="mt-3 space-y-3">
+                            {aiFeedback.rewrittenBullets.map((item, index) => (
+                              <div key={index} className="rounded-xl bg-gray-50 dark:bg-gray-800 p-4 text-sm">
+                                <p className="text-gray-400 line-through">{item.original}</p>
+                                <p className="mt-2 font-medium text-gray-800 dark:text-gray-100">{item.improved}</p>
+                              </div>
+                            ))}
+                          </div>
+                          <p className="mt-2 text-xs text-gray-400">
+                            Replace placeholders like [X%] with your real numbers. Only claim what is true.
+                          </p>
+                        </div>
+                      )}
+
+                      <div>
+                        <h3 className="text-sm font-semibold">Jobs that match your resume</h3>
+
+                        {aiFeedback.recommendedJobs.length === 0 ? (
+                          <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+                            No strong matches among the current openings yet.
+                          </p>
+                        ) : (
+                          <div className="mt-3 space-y-3">
+                            {aiFeedback.recommendedJobs.map((job) => (
+                              <Link
+                                key={job.jobId}
+                                to={`/apply-job/${job.jobId}`}
+                                className="block rounded-xl border border-gray-200 dark:border-gray-700 p-4 transition hover:border-indigo-400"
+                              >
+                                <p className="font-semibold">{job.title}</p>
+                                <p className="text-xs text-gray-500 dark:text-gray-400">
+                                  {[job.company, job.location].filter(Boolean).join(' · ')}
+                                </p>
+                                {job.reason && (
+                                  <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">{job.reason}</p>
+                                )}
+                              </Link>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </section>
 
                 {/* Suggestions */}
@@ -624,7 +753,9 @@ const ATSChecker = () => {
                 Your resume is analyzed in memory and is not stored by us.
                 If we cannot read the text in your file (for example, a
                 scanned PDF), it is sent to our resume-parsing partner
-                HireLayer to extract the text.
+                HireLayer to extract the text. If you click AI feedback, your
+                resume text is also sent to Claude (Anthropic) to write
+                the advice.
               </p>
             </section>
 

@@ -1,29 +1,48 @@
 import React, { useContext, useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useParams, useNavigate } from 'react-router-dom'
+import DOMPurify from 'dompurify'
 import { AppContext } from '../context/AppContext'
-import { assets } from '../assets/assets'
 import Loading from '../components/Loading'
 import Navbar from '../components/Navbar'
+import { assets } from '../assets/assets'
 import moment from 'moment'
 import JobCard from '../components/JobCard'
 import Footer from '../components/Footer'
 import axios from 'axios'
 import { toast } from 'react-toastify'
-import { useAuth } from '@clerk/clerk-react'
+import { useAuth, useClerk } from '@clerk/clerk-react'
+
+const formatSalary = (amount) => {
+  const num = Number(amount)
+  if (!num || Number.isNaN(num)) return amount
+  if (num >= 1000000) return `${(num / 1000000).toFixed(1).replace(/\.0$/, '')}M`
+  if (num >= 1000) return `${(num / 1000).toFixed(1).replace(/\.0$/, '')}K`
+  return num.toString()
+}
 
 const ApplyJob = () => {
   const { id } = useParams()
-  const { getToken } = useAuth()
   const navigate = useNavigate()
-
-  const [isAlreadyApplied, setIsAlreadyApplied] = useState(false)
-  const { jobs, backendUrl, userData, userApplications, fetchUserApplications } = useContext(AppContext)
+  const { getToken, isSignedIn } = useAuth()
+  const { openSignIn } = useClerk()
 
   const [jobData, setJobData] = useState(null)
+  const [isAlreadyApplied, setIsAlreadyApplied] = useState(false)
+  const [applying, setApplying] = useState(false)
+
+  const {
+    jobs,
+    backendUrl,
+    userData,
+    userApplications,
+    fetchUserApplications,
+    fetchUserData
+  } = useContext(AppContext)
 
   const fetchJob = async () => {
     try {
-      const { data } = await axios.get(backendUrl + `/api/jobs/${id}`)
+      const { data } = await axios.get(`${backendUrl}/api/jobs/${id}`)
+
       if (data.success) {
         setJobData(data.job)
       } else {
@@ -36,174 +55,202 @@ const ApplyJob = () => {
 
   const applyHandler = async () => {
     try {
-      if (!userData) {
-        return toast.error('Login to apply for jobs')
+      if (!isSignedIn) {
+        openSignIn()
+        return
       }
 
-      if (!userData.resume) {
+      let activeUser = userData
+      if (!activeUser) {
+        await fetchUserData()
+        activeUser = userData
+      }
+
+      if (!activeUser?.resume) {
         navigate('/applications')
-        return toast.error('Upload resume to apply')
+        toast.error('Upload resume to apply')
+        return
       }
 
+      setApplying(true)
       const token = await getToken()
 
       const { data } = await axios.post(
-        backendUrl + '/api/users/apply',
+        `${backendUrl}/api/users/apply`,
         { jobId: jobData._id },
-        { headers: { Authorization: `Bearer ${token}` } }
+        {
+          headers: {
+            Authorization: `Bearer ${token}`
+          }
+        }
       )
 
       if (data.success) {
         toast.success(data.message)
-        fetchUserApplications()
         setIsAlreadyApplied(true)
+        fetchUserApplications()
       } else {
         toast.error(data.message)
       }
     } catch (error) {
       toast.error(error.response?.data?.message || error.message)
+    } finally {
+      setApplying(false)
     }
   }
 
   const checkAlreadyApplied = () => {
-    const hasApplied = userApplications.some(item => item.jobId?._id === jobData?._id)
+    if (!jobData) return
+    const hasApplied = (userApplications || []).some(
+      (item) => (item.jobId?._id || item.jobId) === jobData._id
+    )
     setIsAlreadyApplied(hasApplied)
   }
 
   useEffect(() => {
     fetchJob()
-  }, [id, jobs])
+  }, [id])
 
   useEffect(() => {
-    if (userApplications.length > 0 && jobData) {
+    if ((userApplications || []).length > 0 && jobData) {
       checkAlreadyApplied()
     }
   }, [jobData, userApplications, id])
 
-  if (!jobs.length || !jobData) {
+  if (!jobData) {
     return <Loading />
   }
 
-  const companyName = jobData.companyId?.name || jobData.company || 'Company'
+  const companyName = jobData?.companyId?.name || 'Company'
+  const companyImage = jobData?.companyId?.image || assets.company_icon
+  const sanitizedDescription = DOMPurify.sanitize(jobData.description || '')
 
-  // Filter logic matching your screenshot layout
-  const appliedJobsIds = new Set(userApplications.map(app => app.jobId && app.jobId._id))
-
-  const relatedJobs = jobs
-    .filter(job => job._id !== jobData._id && job.companyId?._id === jobData.companyId?._id)
-    .filter(job => !appliedJobsIds.has(job._id))
+  const relatedJobs = (jobs || [])
+    .filter(
+      (job) =>
+        job._id !== jobData._id &&
+        job.companyId?._id === jobData.companyId?._id
+    )
+    .filter((job) => {
+      const appliedJobsIds = new Set(
+        (userApplications || []).map((app) => app.jobId && app.jobId._id)
+      )
+      return !appliedJobsIds.has(job._id)
+    })
     .slice(0, 4)
-
-  const salary = Number(jobData.salary)
 
   return (
     <>
       <Navbar />
 
-      <main className="min-h-screen bg-slate-50 dark:bg-gray-950">
-        {/* Job Header */}
-        <section className="max-w-7xl mx-auto px-5 md:px-8 pt-8 pb-6">
-          <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-6 md:p-8">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-              <div className="flex items-center gap-5">
-                <div className="w-16 h-16 shrink-0 rounded-lg border border-gray-200 dark:border-gray-700 flex items-center justify-center p-2">
-                  <img
-                    src={jobData.companyLogo || jobData.companyId?.image || assets.company_icon}
-                    alt="Company Logo"
-                    className="w-full h-full object-contain"
-                  />
-                </div>
+      <div className="min-h-screen flex flex-col py-6 sm:py-10 container px-4 2xl:px-20 mx-auto">
+        <div className="bg-white dark:bg-gray-900 text-black dark:text-white rounded-lg w-full">
 
-                <div>
-                  <h1 className="text-2xl md:text-3xl font-semibold text-gray-900 dark:text-white">
-                    {jobData.title}
-                  </h1>
+          {/* Job Header */}
+          <div className="flex justify-center md:justify-between flex-wrap gap-6 sm:gap-8 px-5 sm:px-10 md:px-14 py-10 sm:py-16 md:py-20 mb-6 bg-sky-50 dark:bg-gray-800 border border-sky-400 dark:border-gray-700 rounded-xl">
 
-                  <div className="flex flex-wrap items-center gap-x-3 gap-y-2 mt-3 text-sm text-gray-500 dark:text-gray-400">
-                    <span>{companyName}</span>
-                    <span>|</span>
-                    <span>{jobData.location || 'Location not specified'}</span>
-                    <span>|</span>
-                    <span>{jobData.level || 'Not specified'}</span>
-                  </div>
-
-                  {Number.isFinite(salary) && (
-                    <p className="text-sm font-semibold text-green-700 dark:text-green-400 mt-3">
-                      CTC: ₹{salary.toLocaleString('en-IN')}
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              <div className="flex flex-col gap-2 md:items-end">
-                <button
-                  onClick={applyHandler}
-                  disabled={isAlreadyApplied}
-                  type="button"
-                  className={`${isAlreadyApplied ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'} text-white px-7 py-3 rounded-lg text-sm font-medium transition`}
-                >
-                  {isAlreadyApplied ? 'Already Applied' : 'Apply Now'}
-                </button>
-                <p className="text-xs text-gray-400 dark:text-gray-500">
-                  Posted {jobData.date ? moment(jobData.date).fromNow() : 'recently'}
-                </p>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* Job Description and Related Jobs */}
-        <section className="max-w-7xl mx-auto px-5 md:px-8 pb-12">
-          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] gap-7 items-start">
-            
-            {/* Job Description */}
-            <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-6 md:p-8">
-              <h2 className="font-bold text-2xl mb-4 text-gray-900 dark:text-white">Job description</h2>
-              
-              <div
-                className="rich-text"
-                dangerouslySetInnerHTML={{
-                  __html: jobData.description || '<p>No description available.</p>'
-                }}
+            <div className="flex flex-col md:flex-row items-center">
+              <img
+                className="h-20 w-20 sm:h-24 sm:w-24 bg-white rounded-lg p-3 sm:p-4 md:mr-4 max-md:mb-4 border object-contain"
+                src={companyImage}
+                alt={companyName}
               />
 
-              <div className="mt-8 pt-6 border-t border-gray-100 dark:border-gray-700">
-                <button
-                  onClick={applyHandler}
-                  disabled={isAlreadyApplied}
-                  type="button"
-                  className={`${isAlreadyApplied ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'} bg-blue-600 text-white p-2.5 px-10 rounded-lg text-sm font-medium transition`}
-                >
-                  {isAlreadyApplied ? 'Already Applied' : 'Apply Now'}
-                </button>
-              </div>
-            </div>
+              <div className="text-center md:text-left text-neutral-700 dark:text-gray-200">
+                <h1 className="text-xl sm:text-3xl md:text-4xl font-medium">
+                  {jobData.title}
+                </h1>
 
-            {/* Right Section More Jobs */}
-            <div className="w-full lg:w-1/3 mt-8 lg:mt-0 lg:ml-8 space-y-5">
-              <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl p-5">
-                <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">
-                  More jobs from {companyName}
-                </h2>
-                <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">Other openings</p>
+                <div className="flex flex-row flex-wrap max-md:justify-center gap-y-2 gap-4 sm:gap-6 items-center text-xs sm:text-sm md:text-base text-gray-600 dark:text-gray-300 mt-3">
+                  <span className="flex items-center gap-1.5">
+                    <img src={assets.suitcase_icon} alt="" className="w-4 h-4" />
+                    {companyName}
+                  </span>
 
-                <div className="flex flex-col gap-4">
-                  {relatedJobs.length > 0 ? (
-                    relatedJobs.map((job, index) => (
-                      <JobCard key={job._id || index} job={job} />
-                    ))
-                  ) : (
-                    <p className="text-sm text-gray-500 dark:text-gray-400 text-center py-6">
-                      No related jobs available.
-                    </p>
-                  )}
+                  <span className="flex items-center gap-1.5">
+                    <img src={assets.location_icon} alt="" className="w-4 h-4" />
+                    {jobData.location}
+                  </span>
+
+                  <span className="flex items-center gap-1.5">
+                    <img src={assets.person_icon} alt="" className="w-4 h-4" />
+                    {jobData.level}
+                  </span>
+
+                  <span className="flex items-center gap-1.5">
+                    <img src={assets.money_icon} alt="" className="w-4 h-4" />
+                    CTC: {formatSalary(jobData.salary)}
+                  </span>
                 </div>
               </div>
             </div>
 
+            <div className="flex flex-col justify-center text-end text-sm w-full md:w-auto max-md:text-center">
+              <button
+                onClick={applyHandler}
+                disabled={isAlreadyApplied || applying}
+                className={`w-full md:w-auto p-3 px-10 text-white font-medium rounded-lg transition cursor-pointer ${
+                  isAlreadyApplied
+                    ? 'bg-gray-400 cursor-not-allowed'
+                    : 'bg-blue-600 hover:bg-blue-700 disabled:opacity-50'
+                }`}
+              >
+                {isAlreadyApplied ? 'Already Applied' : applying ? 'Applying...' : 'Apply Now'}
+              </button>
+
+              <p className="mt-2 text-xs sm:text-sm text-gray-600 dark:text-gray-400">
+                Posted {moment(jobData.date).fromNow()}
+              </p>
+            </div>
           </div>
-        </section>
-      </main>
+
+          {/* Job Content */}
+          <div className="flex flex-col lg:flex-row justify-between items-start gap-8 sm:gap-10">
+
+            {/* Left Column */}
+            <div className="w-full lg:w-2/3">
+              <h2 className="font-bold text-xl sm:text-2xl mb-4">
+                Job Description
+              </h2>
+
+              <div
+                className="rich-text text-sm sm:text-base dark:text-gray-300"
+                dangerouslySetInnerHTML={{ __html: sanitizedDescription }}
+              />
+
+              <button
+                onClick={applyHandler}
+                disabled={isAlreadyApplied || applying}
+                className={`w-full sm:w-auto p-3 px-10 text-white font-medium rounded-lg mt-8 sm:mt-10 transition cursor-pointer ${
+                  isAlreadyApplied
+                    ? 'bg-gray-400 cursor-not-allowed'
+                    : 'bg-blue-600 hover:bg-blue-700 disabled:opacity-50'
+                }`}
+              >
+                {isAlreadyApplied ? 'Already Applied' : applying ? 'Applying...' : 'Apply Now'}
+              </button>
+            </div>
+
+            {/* Right Column */}
+            <div className="w-full lg:w-1/3 mt-6 lg:mt-0 lg:ml-8 space-y-5">
+              <h2 className="font-semibold text-lg sm:text-xl">
+                More jobs from {companyName}
+              </h2>
+
+              {relatedJobs.length > 0 ? (
+                relatedJobs.map((job) => (
+                  <JobCard key={job._id} job={job} />
+                ))
+              ) : (
+                <p className="text-sm text-gray-500 dark:text-gray-400">
+                  No other jobs from this company.
+                </p>
+              )}
+            </div>
+
+          </div>
+        </div>
+      </div>
 
       <Footer />
     </>
