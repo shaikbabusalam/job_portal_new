@@ -145,18 +145,25 @@ const Applications = () => {
     }
   };
 
-  const visibleApplications = (userApplications || []).filter(
-    (app) => app.jobId && app.status?.trim().toLowerCase() !== 'rejected'
-  );
+  const visibleApplications = (userApplications || []).filter((app) => {
+    const normalized = app.status?.trim().toLowerCase();
+    return app.jobId && normalized !== 'rejected' && normalized !== 'terminated';
+  });
 
   const visibleInterviews = interviews.filter((item) => item.jobId);
 
   const getStatusStyle = (status) => {
     switch (status?.trim().toLowerCase()) {
       case 'accepted':
-        return { badge: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400', dot: 'bg-emerald-500' };
+        return {
+          badge: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400',
+          dot: 'bg-emerald-500',
+        };
       default:
-        return { badge: 'bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400', dot: 'bg-amber-500' };
+        return {
+          badge: 'bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
+          dot: 'bg-amber-500',
+        };
     }
   };
 
@@ -167,7 +174,9 @@ const Applications = () => {
       <div className='w-full max-w-7xl px-4 min-h-[65vh] 2xl:px-10 mx-auto my-6 sm:my-10 overflow-hidden'>
         <div className='mb-6 sm:mb-8'>
           <h1 className='text-2xl sm:text-3xl font-bold text-gray-800 dark:text-white'>My Applications</h1>
-          <p className='text-sm sm:text-base text-gray-500 dark:text-gray-400 mt-1.5'>Manage your resume, interviews, and job applications.</p>
+          <p className='text-sm sm:text-base text-gray-500 dark:text-gray-400 mt-1.5'>
+            Manage your resume, interviews, and job applications.
+          </p>
         </div>
 
         {/* Resume Section */}
@@ -187,18 +196,24 @@ const Applications = () => {
 
             <div className='flex flex-wrap items-center gap-2.5'>
               {resume ? (
-                <button onClick={updateResume} className='w-full sm:w-auto bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-lg text-sm font-medium transition cursor-pointer'>Save</button>
-              ) : isEdit || userData?.resume === "" || !userData?.resume ? (
+                <button onClick={updateResume} className='w-full sm:w-auto bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-lg text-sm font-medium transition cursor-pointer'>
+                  Save
+                </button>
+              ) : isEdit || userData?.resume === '' || !userData?.resume ? (
                 <label htmlFor='resumeUpload' className='w-full sm:w-auto justify-center cursor-pointer bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-lg text-sm font-medium transition flex items-center gap-2'>
                   <span>Select Resume</span>
-                  <input id='resumeUpload' onChange={e => setResume(e.target.files[0])} accept='application/pdf' type='file' hidden />
+                  <input id='resumeUpload' onChange={(e) => setResume(e.target.files[0])} accept='application/pdf' type='file' hidden />
                 </label>
               ) : (
                 <div className='flex gap-2 items-center w-full sm:w-auto'>
                   {userData?.resume && (
-                    <a href={userData.resume} target='_blank' rel='noopener noreferrer' className='flex-1 sm:flex-initial text-center bg-blue-50 text-blue-600 px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-100 transition'>Resume</a>
+                    <a href={userData.resume} target='_blank' rel='noopener noreferrer' className='flex-1 sm:flex-initial text-center bg-blue-50 text-blue-600 px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-100 transition'>
+                      Resume
+                    </a>
                   )}
-                  <button onClick={() => setIsEdit(true)} className='flex-1 sm:flex-initial border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 px-4 py-2 rounded-lg text-sm font-medium transition cursor-pointer'>Edit</button>
+                  <button onClick={() => setIsEdit(true)} className='flex-1 sm:flex-initial border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 px-4 py-2 rounded-lg text-sm font-medium transition cursor-pointer'>
+                    Edit
+                  </button>
                 </div>
               )}
             </div>
@@ -263,7 +278,6 @@ const Applications = () => {
             </span>
           </div>
 
-          {/* Visible Horizontal Scroller */}
           <div className='w-full table-scroll-x bg-white dark:bg-gray-800 rounded-2xl border border-gray-200 dark:border-gray-700 shadow-sm pb-1'>
             <table className='w-full min-w-[900px]'>
               <thead className='bg-gray-50 dark:bg-gray-900/60'>
@@ -278,8 +292,9 @@ const Applications = () => {
               </thead>
               <tbody>
                 {visibleApplications.map((app, index) => {
+                  const normalized = app.status?.trim().toLowerCase() || 'pending';
                   const statusStyle = getStatusStyle(app.status || 'Pending');
-                  const isAccepted = app.status?.trim().toLowerCase() === 'accepted';
+                  const isAccepted = normalized === 'accepted';
                   const jobId = app.jobId?._id || app.jobId;
                   const recruiterId = app.companyId?._id || app.companyId || app.jobId?.companyId || '';
 

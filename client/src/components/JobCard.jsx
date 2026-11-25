@@ -1,91 +1,121 @@
-import React, { useState } from 'react'
-import { assets } from '../assets/assets'
-import { useNavigate } from 'react-router-dom'
+// src/components/JobCard.jsx
+import React, { useState } from 'react';
+import { assets } from '../assets/assets';
+import { useNavigate } from 'react-router-dom';
 
-const formatSalary = (amount) => {
-  const num = Number(amount)
-  if (!num || Number.isNaN(num)) return amount
-  if (num >= 100000) return `₹${(num / 100000).toFixed(0)}L`
-  if (num >= 1000) return `₹${(num / 1000).toFixed(0)}K`
-  return `₹${num}`
-}
+const formatCtcBadge = (amount) => {
+  if (amount === undefined || amount === null || amount === '') return 'Competitive CTC';
+  const rawStr = String(amount).trim();
+  const numericOnly = Number(rawStr.replace(/[,₹$\s]/g, ''));
+
+  if (!Number.isNaN(numericOnly) && numericOnly > 0) {
+    if (numericOnly >= 100000) {
+      const lpa = (numericOnly / 100000).toFixed(1).replace(/\.0$/, '');
+      return `₹${lpa} LPA`;
+    }
+    if (numericOnly >= 1000) {
+      const k = (numericOnly / 1000).toFixed(1).replace(/\.0$/, '');
+      return `₹${k}K`;
+    }
+    return `₹${numericOnly}`;
+  }
+  return rawStr;
+};
+
+const stripHtmlToWordLimit = (html = '', maxChars = 110) => {
+  const clean = html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  if (clean.length <= maxChars) return clean;
+  const sliced = clean.slice(0, maxChars);
+  const lastSpace = sliced.lastIndexOf(' ');
+  return `${(lastSpace > 40 ? sliced.slice(0, lastSpace) : sliced).trim()}…`;
+};
 
 const JobCard = ({ job }) => {
-  const navigate = useNavigate()
-  const [bookmarked, setBookmarked] = useState(false)
+  const navigate = useNavigate();
+  const [bookmarked, setBookmarked] = useState(false);
 
-  const companyName = job?.companyId?.name || 'Company'
-  const companyImage = job?.companyId?.image || assets.company_icon
+  const companyName = job?.companyId?.name || 'Company';
+  const companyImage = job?.companyId?.image || assets.company_icon;
+  const summary = stripHtmlToWordLimit(job?.description || '', 110);
+
+  const openJob = () => {
+    navigate(`/apply-job/${job._id}`);
+    window.scrollTo(0, 0);
+  };
 
   return (
-    <div className='bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-3xl p-6 shadow-xs hover:shadow-xl transition-all duration-300 flex flex-col justify-between group'>
+    <article className='bg-[#0b1220] border border-slate-800/90 rounded-3xl p-6 shadow-sm hover:border-violet-500/50 hover:shadow-xl transition-all duration-200 flex flex-col justify-between group'>
       <div>
-        <div className='flex items-center justify-between gap-3 mb-5'>
+        <div className='flex items-start justify-between gap-3 mb-4'>
           <img
             src={companyImage}
             alt={companyName}
-            className='w-12 h-12 object-contain rounded-2xl border border-zinc-100 dark:border-zinc-800 p-1.5 bg-zinc-50 dark:bg-zinc-800 shrink-0'
+            className='w-12 h-12 object-contain rounded-2xl border border-slate-800 p-1.5 bg-white shrink-0'
           />
 
           <button
+            type='button'
             onClick={() => setBookmarked((prev) => !prev)}
-            title={bookmarked ? 'Remove bookmark' : 'Bookmark job'}
-            className={`w-9 h-9 rounded-xl border flex items-center justify-center transition cursor-pointer ${
+            title={bookmarked ? 'Saved job' : 'Save job'}
+            aria-label={bookmarked ? 'Remove bookmark' : 'Bookmark job'}
+            className={`w-9 h-9 rounded-xl border flex items-center justify-center transition cursor-pointer shrink-0 ${
               bookmarked
-                ? 'bg-violet-50 border-violet-200 text-violet-600 dark:bg-violet-950 dark:border-violet-800 dark:text-violet-300'
-                : 'border-zinc-200 dark:border-zinc-800 text-zinc-400 hover:text-zinc-700 dark:hover:text-white'
+                ? 'bg-violet-500/20 border-violet-400/50 text-violet-300'
+                : 'border-slate-800 bg-slate-900/70 text-slate-400 hover:text-white'
             }`}
           >
             {bookmarked ? '★' : '☆'}
           </button>
         </div>
 
-        <h3 className='font-bold text-base sm:text-lg text-zinc-900 dark:text-white group-hover:text-violet-600 transition truncate'>
+        <h3
+          onClick={openJob}
+          className='font-bold text-lg text-violet-400 group-hover:text-violet-300 transition cursor-pointer line-clamp-1'
+        >
           {job.title}
         </h3>
 
-        <p className='text-xs text-zinc-500 dark:text-zinc-400 mt-1 truncate font-medium'>
-          {companyName} • {job.location}
+        <p className='text-xs text-slate-400 mt-1 truncate font-medium'>
+          {companyName} • {job.location || 'Remote'}
         </p>
 
-        <p
-          className='text-xs text-zinc-600 dark:text-zinc-300 mt-3.5 line-clamp-2 leading-relaxed'
-          dangerouslySetInnerHTML={{ __html: job.description.slice(0, 110) + '...' }}
-        />
+        {summary && (
+          <p className='text-xs text-slate-300/90 mt-3.5 line-clamp-2 leading-relaxed'>
+            {summary}
+          </p>
+        )}
 
-        <div className='flex flex-wrap items-center gap-2 mt-5'>
-          <span className='px-3 py-1 rounded-xl bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 text-[11px] font-semibold'>
-            {job.level}
-          </span>
-          <span className='px-3 py-1 rounded-xl bg-violet-50 dark:bg-violet-950/60 text-violet-700 dark:text-violet-300 text-[11px] font-semibold'>
-            CTC: {formatSalary(job.salary)}
+        <div className='flex flex-wrap items-center gap-2 mt-4'>
+          {job.level && (
+            <span className='px-3 py-1 rounded-lg bg-slate-800/90 text-slate-200 text-[11px] font-semibold'>
+              {job.level}
+            </span>
+          )}
+          <span className='px-3 py-1 rounded-lg bg-violet-600/25 border border-violet-500/30 text-violet-200 text-[11px] font-bold'>
+            CTC: {formatCtcBadge(job.salary)}
           </span>
         </div>
       </div>
 
-      <div className='flex items-center gap-2.5 pt-5 mt-5 border-t border-zinc-100 dark:border-zinc-800'>
+      <div className='flex items-center gap-2.5 pt-4 mt-5 border-t border-slate-800/80'>
         <button
-          onClick={() => {
-            navigate(`/apply-job/${job._id}`)
-            window.scrollTo(0, 0)
-          }}
-          className='flex-1 bg-zinc-900 hover:bg-violet-600 dark:bg-white dark:hover:bg-violet-600 dark:text-zinc-900 text-white py-3 rounded-xl text-xs font-bold transition cursor-pointer text-center shadow-md'
+          type='button'
+          onClick={openJob}
+          className='flex-1 bg-white hover:bg-violet-500 hover:text-white text-slate-950 py-2.5 rounded-xl text-xs font-bold transition cursor-pointer text-center'
         >
           Apply Now
         </button>
 
         <button
-          onClick={() => {
-            navigate(`/apply-job/${job._id}`)
-            window.scrollTo(0, 0)
-          }}
-          className='px-4 py-3 rounded-xl border border-zinc-200 dark:border-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800 text-xs font-bold transition cursor-pointer'
+          type='button'
+          onClick={openJob}
+          className='px-4 py-2.5 rounded-xl border border-slate-700 text-slate-200 hover:bg-slate-800 text-xs font-semibold transition cursor-pointer'
         >
           Details
         </button>
       </div>
-    </div>
-  )
-}
+    </article>
+  );
+};
 
-export default JobCard
+export default JobCard;

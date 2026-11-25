@@ -3,6 +3,7 @@ import React, { useContext, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '@clerk/clerk-react';
 import axios from 'axios';
+import { toast } from 'react-toastify';
 import { AppContext } from '../context/AppContext';
 import { SocketContext } from '../context/SocketContext';
 import { assets } from '../assets/assets';
@@ -40,7 +41,13 @@ const formatDateLabel = (timestamp) => {
   return date.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
 };
 
-export default function ChatBox({ chatId, currentUserId, isRecruiter = false, onMobileBack }) {
+export default function ChatBox({
+  chatId,
+  currentUserId,
+  isRecruiter = false,
+  onMobileBack,
+  onChatCleared,
+}) {
   const { backendUrl, companyToken } = useContext(AppContext);
   const { socket, onlineUserIds } = useContext(SocketContext);
   const { getToken } = useAuth();
@@ -55,6 +62,8 @@ export default function ChatBox({ chatId, currentUserId, isRecruiter = false, on
   const [loading, setLoading] = useState(true);
   const [showEmojis, setShowEmojis] = useState(false);
   const [peerTyping, setPeerTyping] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [clearing, setClearing] = useState(false);
 
   const messagesContainerRef = useRef(null);
   const prevMessageCountRef = useRef(0);
@@ -62,7 +71,7 @@ export default function ChatBox({ chatId, currentUserId, isRecruiter = false, on
 
   const getAuthHeaders = async () => {
     if (isRecruiter) {
-      const token = companyToken || localStorage.getItem('companyToken');
+      const token = companyToken || sessionStorage.getItem('companyToken');
       return token ? { token } : {};
     }
     const clerkToken = await getToken();
@@ -102,11 +111,11 @@ export default function ChatBox({ chatId, currentUserId, isRecruiter = false, on
   useEffect(() => {
     setLoading(true);
     setPeerTyping(false);
+    setConfirmClear(false);
     prevMessageCountRef.current = 0;
     fetchMessages(true);
   }, [chatId, backendUrl]);
 
-  // Real-time Socket.io room subscription & typing listeners
   useEffect(() => {
     if (!socket || !chatId) return;
 
@@ -119,6 +128,14 @@ export default function ChatBox({ chatId, currentUserId, isRecruiter = false, on
         return [...prev, message];
       });
       setPeerTyping(false);
+    };
+
+    const onChatCleared = ({ chatId: incomingChatId }) => {
+      if (String(incomingChatId) !== String(chatId)) return;
+      setMessages([]);
+      setPeerTyping(false);
+      prevMessageCountRef.current = 0;
+      if (onChatCleared) onChatCleared();
     };
 
     const onUserTyping = ({ chatId: incomingChatId, userId }) => {
@@ -134,12 +151,14 @@ export default function ChatBox({ chatId, currentUserId, isRecruiter = false, on
     };
 
     socket.on('receive_message', onReceiveMessage);
+    socket.on('chat_cleared', onChatCleared);
     socket.on('user_typing', onUserTyping);
     socket.on('user_stop_typing', onUserStopTyping);
 
     return () => {
       socket.emit('leave_chat', chatId);
       socket.off('receive_message', onReceiveMessage);
+      socket.off('chat_cleared', onChatCleared);
       socket.off('user_typing', onUserTyping);
       socket.off('user_stop_typing', onUserStopTyping);
     };
@@ -171,6 +190,28 @@ export default function ChatBox({ chatId, currentUserId, isRecruiter = false, on
     typingTimeoutRef.current = setTimeout(() => {
       socket.emit('stop_typing', { chatId, userId: effectiveSenderId });
     }, 1500);
+  };
+
+  const handleClearChat = async () => {
+    if (!chatId || clearing) return;
+    try {
+      setClearing(true);
+      const headers = await getAuthHeaders();
+      const { data } = await axios.post(`${backendUrl}/api/chat/${chatId}/clear`, {}, { headers });
+      if (data.success) {
+        setMessages([]);
+        setConfirmClear(false);
+        prevMessageCountRef.current = 0;
+        toast.info('Chat cleared');
+        if (onChatCleared) onChatCleared();
+      } else {
+        toast.error(data.message || 'Could not clear chat');
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to clear chat');
+    } finally {
+      setClearing(false);
+    }
   };
 
   const sendMessage = async (e, customText = null) => {
@@ -242,7 +283,7 @@ export default function ChatBox({ chatId, currentUserId, isRecruiter = false, on
   const quickReplies = isRecruiter ? QUICK_REPLIES_RECRUITER : QUICK_REPLIES_APPLICANT;
 
   return (
-    <div className="flex flex-col h-[calc(100dvh-88px)] md:h-full max-h-[780px] bg-white dark:bg-zinc-900">
+    <div className="flex flex-col h-[calc(100dvh-88px)] md:h-full max-h-[800px] bg-white dark:bg-zinc-900">
       {/* Header */}
       <div className="px-4 sm:px-6 py-3.5 bg-white/90 dark:bg-zinc-900/90 backdrop-blur-md border-b border-zinc-200/80 dark:border-zinc-800 flex items-center justify-between gap-3 shrink-0">
         <div className="flex items-center gap-3 min-w-0">
@@ -294,12 +335,43 @@ export default function ChatBox({ chatId, currentUserId, isRecruiter = false, on
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
+          {confirmClear ? (
+            <div className="inline-flex items-center gap-1.5 bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 px-2.5 py-1.5 rounded-xl">
+              <span className="text-[11px] font-semibold text-rose-700 dark:text-rose-300">Clear chat?</span>
+              <button
+                type="button"
+                onClick={handleClearChat}
+                disabled={clearing}
+                className="bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-semibold px-2 py-0.5 rounded-lg cursor-pointer"
+              >
+                {clearing ? '...' : 'Yes'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmClear(false)}
+                className="text-zinc-600 dark:text-zinc-300 text-[11px] font-medium px-1.5 py-0.5 cursor-pointer"
+              >
+                No
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setConfirmClear(true)}
+              disabled={messages.length === 0}
+              className="text-xs font-semibold border border-rose-200 dark:border-rose-900/70 bg-rose-50/70 hover:bg-rose-100 dark:bg-rose-950/30 dark:hover:bg-rose-950/60 text-rose-600 dark:text-rose-400 px-3 py-2 rounded-xl transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Clear conversation messages"
+            >
+              Clear Chat
+            </button>
+          )}
+
           {isRecruiter && otherPerson.resume && (
             <a
               href={otherPerson.resume}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-xs font-semibold bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-white px-3.5 py-2 rounded-xl transition"
+              className="hidden sm:inline-flex text-xs font-semibold bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-white px-3.5 py-2 rounded-xl transition"
             >
               Resume ↗
             </a>
@@ -307,7 +379,7 @@ export default function ChatBox({ chatId, currentUserId, isRecruiter = false, on
           {!isRecruiter && jobInfo.id && (
             <Link
               to={`/apply-job/${jobInfo.id}`}
-              className="text-xs font-semibold bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-800 dark:text-zinc-200 px-3.5 py-2 rounded-xl transition"
+              className="hidden sm:inline-flex text-xs font-semibold bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-800 dark:text-zinc-200 px-3.5 py-2 rounded-xl transition"
             >
               Job Post ↗
             </Link>
@@ -359,7 +431,7 @@ export default function ChatBox({ chatId, currentUserId, isRecruiter = false, on
                   <div
                     className={`max-w-[82%] sm:max-w-[70%] px-4 py-3 rounded-2xl text-sm leading-relaxed ${
                       isMe
-                        ? 'bg-zinc-900 dark:bg-violet-600 text-white rounded-br-xs shadow-md shadow-zinc-900/10'
+                        ? 'bg-violet-600 text-white rounded-br-xs shadow-md shadow-violet-600/15'
                         : 'bg-white dark:bg-zinc-900 border border-zinc-200/90 dark:border-zinc-800 text-zinc-800 dark:text-zinc-100 rounded-bl-xs shadow-2xs'
                     }`}
                   >

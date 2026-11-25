@@ -1,39 +1,38 @@
-import React, { useContext, useState } from 'react'
-import { AppContext } from '../context/AppContext'
-import { JobCategories, JobLocations } from '../assets/assets'
-import JobCard from './JobCard'
+// src/components/JobListing.jsx
+import React, { useContext, useState } from 'react';
+import { AppContext } from '../context/AppContext';
+import { JobCategories, JobLocations } from '../assets/assets';
+import JobCard from './JobCard';
 
 const JobListing = () => {
-  const { isSearched, searchFilter, setSearchFilter, jobs } = useContext(AppContext)
-  const [currentPage, setCurrentPage] = useState(1)
-  const [selectedCategory, setSelectedCategory] = useState('')
-  const [selectedLocation, setSelectedLocation] = useState('')
-  const [selectedLevel, setSelectedLevel] = useState('')
+  const { isSearched, searchFilter, setSearchFilter, jobs } = useContext(AppContext);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [selectedCategory, setSelectedCategory] = useState('');
+  const [selectedLocation, setSelectedLocation] = useState('');
+  const [selectedLevel, setSelectedLevel] = useState('');
 
   const filteredJobs = jobs.filter((job) => {
-    const matchesTitle = searchFilter.title === '' || job.title.toLowerCase().includes(searchFilter.title.toLowerCase())
-    const matchesLocation = searchFilter.location === '' || job.location.toLowerCase().includes(searchFilter.location.toLowerCase())
-    const matchesCategory = selectedCategory === '' || job.category === selectedCategory
-    const matchesLocDropdown = selectedLocation === '' || job.location === selectedLocation
-    const matchesLevel = selectedLevel === '' || job.level === selectedLevel
+    const matchesTitle = searchFilter.title === '' || job.title.toLowerCase().includes(searchFilter.title.toLowerCase());
+    const matchesLocation = searchFilter.location === '' || job.location.toLowerCase().includes(searchFilter.location.toLowerCase());
+    const matchesCategory = selectedCategory === '' || job.category === selectedCategory;
+    const matchesLocDropdown = selectedLocation === '' || job.location === selectedLocation;
+    const matchesLevel = selectedLevel === '' || job.level === selectedLevel;
 
-    return matchesTitle && matchesLocation && matchesCategory && matchesLocDropdown && matchesLevel && job.visible
-  })
+    return matchesTitle && matchesLocation && matchesCategory && matchesLocDropdown && matchesLevel && job.visible;
+  });
 
   const resetFilters = () => {
-    setSelectedCategory('')
-    setSelectedLocation('')
-    setSelectedLevel('')
-    setSearchFilter({ title: '', location: '' })
-  }
+    setSelectedCategory('');
+    setSelectedLocation('');
+    setSelectedLevel('');
+    setSearchFilter({ title: '', location: '' });
+  };
 
   return (
     <div className='container 2xl:px-20 mx-auto px-4 my-10'>
-      {/* Horizontal Filter Bar */}
       <div className='bg-white dark:bg-zinc-900 border border-zinc-200/80 dark:border-zinc-800 rounded-2xl p-4 sm:p-5 shadow-sm mb-8'>
         <div className='flex flex-wrap items-center justify-between gap-3'>
           <div className='flex flex-wrap items-center gap-3 flex-1'>
-            {/* Category Dropdown */}
             <select
               value={selectedCategory}
               onChange={(e) => setSelectedCategory(e.target.value)}
@@ -45,7 +44,6 @@ const JobListing = () => {
               ))}
             </select>
 
-            {/* Location Dropdown */}
             <select
               value={selectedLocation}
               onChange={(e) => setSelectedLocation(e.target.value)}
@@ -57,7 +55,6 @@ const JobListing = () => {
               ))}
             </select>
 
-            {/* Experience Level Dropdown */}
             <select
               value={selectedLevel}
               onChange={(e) => setSelectedLevel(e.target.value)}
@@ -81,7 +78,6 @@ const JobListing = () => {
         </div>
       </div>
 
-      {/* Active Search Badge */}
       {isSearched && (searchFilter.title !== '' || searchFilter.location !== '') && (
         <div className='flex items-center gap-2 mb-6'>
           <span className='text-xs font-medium text-zinc-500'>Active Search:</span>
@@ -106,7 +102,6 @@ const JobListing = () => {
         </div>
       )}
 
-      {/* Section Header */}
       <div className='flex items-center justify-between mb-6'>
         <h2 className='text-xl sm:text-2xl font-black text-zinc-900 dark:text-white tracking-tight' id='job-list'>
           Recent Job Openings
@@ -116,14 +111,12 @@ const JobListing = () => {
         </span>
       </div>
 
-      {/* 3-Column Job Grid */}
       <div className='grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6'>
         {filteredJobs.slice((currentPage - 1) * 6, currentPage * 6).map((job, index) => (
           <JobCard key={job._id || index} job={job} />
         ))}
       </div>
 
-      {/* Pagination */}
       {filteredJobs.length > 6 && (
         <div className='flex items-center justify-center space-x-2 mt-12'>
           <a href='#job-list'>
@@ -161,7 +154,7 @@ const JobListing = () => {
         </div>
       )}
     </div>
-  )
-}
+  );
+};
 
-export default JobListing
+export default JobListing;
