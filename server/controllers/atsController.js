@@ -1,9 +1,6 @@
-import { createRequire } from 'module';
 import mammoth from 'mammoth';
+import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import Job from '../models/Job.js';
-
-const require = createRequire(import.meta.url);
-const pdfParseModule = require('pdf-parse');
 
 const SKILL_GROUPS = {
   Frontend: ['react', 'next.js', 'nextjs', 'vue', 'angular', 'typescript', 'javascript', 'html', 'css', 'tailwind'],
@@ -29,39 +26,31 @@ async function extractResumeText(file) {
   const name = (file.originalname || '').toLowerCase();
 
   if (name.endsWith('.pdf') || file.mimetype === 'application/pdf') {
-    const PDFParseClass =
-      pdfParseModule?.PDFParse || pdfParseModule?.default?.PDFParse;
+    const loadingTask = getDocument({
+      data: new Uint8Array(file.buffer),
+      verbosity: 0,
+      useWorkerFetch: false,
+      isEvalSupported: false,
+      useSystemFonts: true,
+    });
 
-    if (typeof PDFParseClass === 'function') {
-      const parser = new PDFParseClass({ data: file.buffer });
-      try {
-        const textResult = await parser.getText();
-        const infoResult = await parser.getInfo().catch(() => null);
-        return {
-          text: textResult?.text || '',
-          pages: infoResult?.total || textResult?.pages?.length || null,
-        };
-      } finally {
-        await parser.destroy().catch(() => {});
-      }
+    const pdfDoc = await loadingTask.promise;
+    const pages = pdfDoc.numPages || null;
+    const pageTexts = [];
+
+    for (let pageNum = 1; pageNum <= pdfDoc.numPages; pageNum += 1) {
+      const page = await pdfDoc.getPage(pageNum);
+      const textContent = await page.getTextContent();
+      const strings = textContent.items
+        .map((item) => ('str' in item ? item.str : ''))
+        .filter(Boolean);
+      pageTexts.push(strings.join(' '));
     }
 
-    const legacyFn =
-      typeof pdfParseModule === 'function'
-        ? pdfParseModule
-        : typeof pdfParseModule?.default === 'function'
-        ? pdfParseModule.default
-        : null;
-
-    if (legacyFn) {
-      const parsed = await legacyFn(file.buffer);
-      return {
-        text: parsed?.text || '',
-        pages: parsed?.numpages || null,
-      };
-    }
-
-    throw new Error('PDF parser export is not a function or PDFParse class.');
+    return {
+      text: pageTexts.join('\n'),
+      pages,
+    };
   }
 
   if (
