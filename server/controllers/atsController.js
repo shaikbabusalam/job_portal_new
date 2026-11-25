@@ -1,5 +1,5 @@
+import zlib from 'zlib';
 import mammoth from 'mammoth';
-import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import Job from '../models/Job.js';
 
 const SKILL_GROUPS = {
@@ -22,35 +22,97 @@ const STOP_WORDS = new Set([
   'experience', 'skills', 'using', 'used', 'job', 'description', 'ability',
 ]);
 
+function decodePdfLiteral(str) {
+  return str
+    .replace(/\\([nrtbf()\\])/g, (_, ch) => {
+      if (ch === 'n') return '\n';
+      if (ch === 'r') return '\r';
+      if (ch === 't') return '\t';
+      if (ch === 'b') return '\b';
+      if (ch === 'f') return '\f';
+      return ch;
+    })
+    .replace(/\\([0-7]{1,3})/g, (_, oct) => String.fromCharCode(parseInt(oct, 8)));
+}
+
+function extractTextFromPdfStream(streamBuf) {
+  const raw = streamBuf.toString('latin1');
+  const parts = [];
+
+  const tjMatches = raw.matchAll(/\((?:\\.|[^\\()])*\)\s*Tj/g);
+  for (const match of tjMatches) {
+    const inside = match[0].slice(match[0].indexOf('(') + 1, match[0].lastIndexOf(')'));
+    parts.push(decodePdfLiteral(inside));
+  }
+
+  const tjArrayMatches = raw.matchAll(/\[(?:\\.|[^\\[\]])*\]\s*TJ/g);
+  for (const match of tjArrayMatches) {
+    const inside = match[0].slice(match[0].indexOf('[') + 1, match[0].lastIndexOf(']'));
+    const strings = inside.matchAll(/\((?:\\.|[^\\()])*\)/g);
+    for (const s of strings) {
+      parts.push(decodePdfLiteral(s[0].slice(1, -1)));
+    }
+  }
+
+  return parts.join(' ');
+}
+
+function extractPdfTextPureJs(buffer) {
+  const latin = buffer.toString('latin1');
+  const pageMatches = latin.match(/\/Type\s*\/Page\b/g);
+  const pages = pageMatches ? pageMatches.length : null;
+
+  const chunks = [];
+  let searchPos = 0;
+
+  while (searchPos < buffer.length) {
+    const streamIdx = buffer.indexOf('stream', searchPos);
+    if (streamIdx === -1) break;
+
+    let dataStart = streamIdx + 6;
+    if (buffer[dataStart] === 0x0d && buffer[dataStart + 1] === 0x0a) {
+      dataStart += 2;
+    } else if (buffer[dataStart] === 0x0a) {
+      dataStart += 1;
+    }
+
+    const endstreamIdx = buffer.indexOf('endstream', dataStart);
+    if (endstreamIdx === -1) break;
+
+    const rawStream = buffer.subarray(dataStart, endstreamIdx);
+    let decoded = '';
+
+    try {
+      decoded = extractTextFromPdfStream(zlib.inflateSync(rawStream));
+    } catch {
+      decoded = extractTextFromPdfStream(rawStream);
+    }
+
+    if (decoded.trim()) {
+      chunks.push(decoded);
+    }
+
+    searchPos = endstreamIdx + 9;
+  }
+
+  let text = chunks.join('\n').replace(/\s+/g, ' ').trim();
+
+  if (text.length < 20) {
+    const printable = latin.replace(/[^\x20-\x7e\r\n]+/g, ' ');
+    const words = printable.match(/[A-Za-z][A-Za-z0-9+#./@-]{1,}/g) || [];
+    if (words.length >= 10) {
+      text = words.join(' ');
+    }
+  }
+
+  return { text, pages };
+}
+
 async function extractResumeText(file) {
   const name = (file.originalname || '').toLowerCase();
 
   if (name.endsWith('.pdf') || file.mimetype === 'application/pdf') {
-    const loadingTask = getDocument({
-      data: new Uint8Array(file.buffer),
-      verbosity: 0,
-      useWorkerFetch: false,
-      isEvalSupported: false,
-      useSystemFonts: true,
-    });
-
-    const pdfDoc = await loadingTask.promise;
-    const pages = pdfDoc.numPages || null;
-    const pageTexts = [];
-
-    for (let pageNum = 1; pageNum <= pdfDoc.numPages; pageNum += 1) {
-      const page = await pdfDoc.getPage(pageNum);
-      const textContent = await page.getTextContent();
-      const strings = textContent.items
-        .map((item) => ('str' in item ? item.str : ''))
-        .filter(Boolean);
-      pageTexts.push(strings.join(' '));
-    }
-
-    return {
-      text: pageTexts.join('\n'),
-      pages,
-    };
+    return extractPdfTextPureJs(file.buffer);
   }
 
   if (
