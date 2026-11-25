@@ -1,3 +1,4 @@
+// server/models/chatModel.js
 import mongoose from 'mongoose';
 
 const messageSchema = new mongoose.Schema({
@@ -29,6 +30,14 @@ const chatSchema = new mongoose.Schema(
     recruiterLastReadCount: {
       type: Number,
       default: 0,
+    },
+    pinnedBy: {
+      type: [String],
+      default: [],
+    },
+    forceUnreadBy: {
+      type: [String],
+      default: [],
     },
   },
   { timestamps: true }

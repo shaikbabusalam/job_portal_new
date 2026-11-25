@@ -1,3 +1,4 @@
+// server/controllers/chatController.js
 import { Chat } from '../models/chatModel.js';
 import User from '../models/user.js';
 import Company from '../models/Company.js';
@@ -30,7 +31,6 @@ export async function getOrCreateChat(req, res) {
       });
     }
 
-    // Verify caller is one of the two participants
     if (String(caller.id) !== String(applicantId) && String(caller.id) !== String(recruiterId)) {
       return res.status(403).json({
         success: false,
@@ -38,7 +38,6 @@ export async function getOrCreateChat(req, res) {
       });
     }
 
-    // Verify application exists and is Accepted
     const application = await JobApplication.findOne({
       jobId,
       userId: String(applicantId),
@@ -48,7 +47,7 @@ export async function getOrCreateChat(req, res) {
     if (!application) {
       return res.status(403).json({
         success: false,
-        message: 'Chat unlocks once the application is accepted.',
+        message: 'Chat is only available for accepted applications.',
       });
     }
 
@@ -78,23 +77,34 @@ export async function getChatById(req, res) {
   try {
     const { chatId } = req.params;
     const caller = req.chatUser;
+    const callerKey = String(caller.id);
 
     const chat = await Chat.findById(chatId).populate('jobId', 'title location category salary');
     if (!chat) {
       return res.status(404).json({ success: false, message: 'Chat not found.' });
     }
 
-    if (!isParticipant(chat, caller.id)) {
+    if (!isParticipant(chat, callerKey)) {
       return res.status(403).json({ success: false, message: 'Access denied to this conversation.' });
     }
 
-    // Update read count for the caller on the server
     const totalMessages = chat.messages.length;
-    if (String(chat.applicantId) === String(caller.id) && chat.applicantLastReadCount < totalMessages) {
+    let shouldSave = false;
+
+    if (String(chat.applicantId) === callerKey && chat.applicantLastReadCount < totalMessages) {
       chat.applicantLastReadCount = totalMessages;
-      await chat.save();
-    } else if (String(chat.recruiterId) === String(caller.id) && chat.recruiterLastReadCount < totalMessages) {
+      shouldSave = true;
+    } else if (String(chat.recruiterId) === callerKey && chat.recruiterLastReadCount < totalMessages) {
       chat.recruiterLastReadCount = totalMessages;
+      shouldSave = true;
+    }
+
+    if (chat.forceUnreadBy?.includes(callerKey)) {
+      chat.forceUnreadBy = chat.forceUnreadBy.filter((id) => id !== callerKey);
+      shouldSave = true;
+    }
+
+    if (shouldSave) {
       await chat.save();
     }
 
@@ -119,13 +129,14 @@ export async function getUserChats(req, res) {
   try {
     const { userId } = req.params;
     const caller = req.chatUser;
+    const callerKey = String(userId);
 
-    if (String(caller.id) !== String(userId)) {
+    if (String(caller.id) !== callerKey) {
       return res.status(403).json({ success: false, message: 'Forbidden: Cannot list another user’s chats.' });
     }
 
     const chats = await Chat.find({
-      $or: [{ applicantId: String(userId) }, { recruiterId: String(userId) }],
+      $or: [{ applicantId: callerKey }, { recruiterId: callerKey }],
     })
       .populate('jobId', 'title location')
       .sort({ updatedAt: -1 });
@@ -135,9 +146,14 @@ export async function getUserChats(req, res) {
         const chatObj = chatDoc.toObject();
         const total = chatObj.messages?.length || 0;
         const lastRead =
-          String(chatObj.applicantId) === String(userId)
+          String(chatObj.applicantId) === callerKey
             ? chatObj.applicantLastReadCount || 0
             : chatObj.recruiterLastReadCount || 0;
+
+        const computedUnread = Math.max(0, total - lastRead);
+        const isForcedUnread = Array.isArray(chatObj.forceUnreadBy) && chatObj.forceUnreadBy.includes(callerKey);
+        const unreadCount = computedUnread > 0 ? computedUnread : isForcedUnread ? 1 : 0;
+        const isPinned = Array.isArray(chatObj.pinnedBy) && chatObj.pinnedBy.includes(callerKey);
 
         const [applicant, recruiter] = await Promise.all([
           User.findById(chatObj.applicantId).select('name email image'),
@@ -146,12 +162,18 @@ export async function getUserChats(req, res) {
 
         return {
           ...chatObj,
-          unreadCount: Math.max(0, total - lastRead),
+          unreadCount,
+          isPinned,
           applicant: applicant || null,
           recruiter: recruiter || null,
         };
       })
     );
+
+    enrichedChats.sort((a, b) => {
+      if (a.isPinned !== b.isPinned) return a.isPinned ? -1 : 1;
+      return new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0);
+    });
 
     return res.json({ success: true, chats: enrichedChats });
   } catch (error) {
@@ -164,6 +186,7 @@ export async function sendMessageHttp(req, res) {
   try {
     const { chatId, text } = req.body;
     const caller = req.chatUser;
+    const callerKey = String(caller.id);
 
     if (!chatId || !text?.trim()) {
       return res.status(400).json({ success: false, message: 'Missing message fields.' });
@@ -174,28 +197,28 @@ export async function sendMessageHttp(req, res) {
       return res.status(404).json({ success: false, message: 'Chat not found.' });
     }
 
-    if (!isParticipant(existingChat, caller.id)) {
+    if (!isParticipant(existingChat, callerKey)) {
       return res.status(403).json({ success: false, message: 'Access denied to this conversation.' });
     }
 
     const newTotal = existingChat.messages.length + 1;
     const readField =
-      String(existingChat.applicantId) === String(caller.id)
+      String(existingChat.applicantId) === callerKey
         ? 'applicantLastReadCount'
         : 'recruiterLastReadCount';
 
     const updatedChat = await Chat.findByIdAndUpdate(
       chatId,
       {
-        $push: { messages: { sender: String(caller.id), text: text.trim() } },
+        $push: { messages: { sender: callerKey, text: text.trim() } },
         $set: { [readField]: newTotal },
+        $pull: { forceUnreadBy: callerKey },
       },
       { new: true }
     );
 
     const savedMessage = updatedChat.messages[updatedChat.messages.length - 1];
 
-    // Broadcast immediately via Socket.io if attached to app
     const io = req.app.get('io');
     if (io) {
       io.to(String(chatId)).emit('receive_message', {
@@ -207,6 +230,144 @@ export async function sendMessageHttp(req, res) {
     return res.json({ success: true, message: savedMessage });
   } catch (error) {
     console.error('sendMessageHttp error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+export async function clearChat(req, res) {
+  try {
+    const { chatId } = req.params;
+    const caller = req.chatUser;
+
+    const existingChat = await Chat.findById(chatId);
+    if (!existingChat) {
+      return res.status(404).json({ success: false, message: 'Chat not found.' });
+    }
+
+    if (!isParticipant(existingChat, caller.id)) {
+      return res.status(403).json({ success: false, message: 'Access denied to clear this conversation.' });
+    }
+
+    await Chat.findByIdAndUpdate(chatId, {
+      $set: {
+        messages: [],
+        applicantLastReadCount: 0,
+        recruiterLastReadCount: 0,
+        forceUnreadBy: [],
+      },
+    });
+
+    const io = req.app.get('io');
+    if (io) {
+      io.to(String(chatId)).emit('chat_cleared', { chatId: String(chatId) });
+    }
+
+    return res.json({ success: true, message: 'Chat history cleared.' });
+  } catch (error) {
+    console.error('clearChat error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+export async function togglePinChat(req, res) {
+  try {
+    const { chatId } = req.params;
+    const callerKey = String(req.chatUser.id);
+
+    const chat = await Chat.findById(chatId);
+    if (!chat) {
+      return res.status(404).json({ success: false, message: 'Chat not found.' });
+    }
+
+    if (!isParticipant(chat, callerKey)) {
+      return res.status(403).json({ success: false, message: 'Access denied.' });
+    }
+
+    const alreadyPinned = Array.isArray(chat.pinnedBy) && chat.pinnedBy.includes(callerKey);
+    const updated = await Chat.findByIdAndUpdate(
+      chatId,
+      alreadyPinned
+        ? { $pull: { pinnedBy: callerKey } }
+        : { $addToSet: { pinnedBy: callerKey } },
+      { new: true }
+    );
+
+    return res.json({
+      success: true,
+      isPinned: !alreadyPinned,
+      pinnedBy: updated.pinnedBy,
+    });
+  } catch (error) {
+    console.error('togglePinChat error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+export async function toggleUnreadChat(req, res) {
+  try {
+    const { chatId } = req.params;
+    const callerKey = String(req.chatUser.id);
+    const { unread } = req.body;
+
+    const chat = await Chat.findById(chatId);
+    if (!chat) {
+      return res.status(404).json({ success: false, message: 'Chat not found.' });
+    }
+
+    if (!isParticipant(chat, callerKey)) {
+      return res.status(403).json({ success: false, message: 'Access denied.' });
+    }
+
+    const shouldMarkUnread = typeof unread === 'boolean' ? unread : !chat.forceUnreadBy?.includes(callerKey);
+    const readField =
+      String(chat.applicantId) === callerKey
+        ? 'applicantLastReadCount'
+        : 'recruiterLastReadCount';
+
+    await Chat.findByIdAndUpdate(
+      chatId,
+      shouldMarkUnread
+        ? { $addToSet: { forceUnreadBy: callerKey } }
+        : {
+            $pull: { forceUnreadBy: callerKey },
+            $set: { [readField]: chat.messages?.length || 0 },
+          }
+    );
+
+    return res.json({
+      success: true,
+      unread: shouldMarkUnread,
+    });
+  } catch (error) {
+    console.error('toggleUnreadChat error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+}
+
+export async function deleteChat(req, res) {
+  try {
+    const { chatId } = req.params;
+    const callerKey = String(req.chatUser.id);
+
+    const chat = await Chat.findById(chatId);
+    if (!chat) {
+      return res.status(404).json({ success: false, message: 'Chat not found.' });
+    }
+
+    if (!isParticipant(chat, callerKey)) {
+      return res.status(403).json({ success: false, message: 'Access denied to delete this chat.' });
+    }
+
+    await Chat.findByIdAndDelete(chatId);
+
+    const io = req.app.get('io');
+    if (io) {
+      io.to(String(chatId)).emit('chat_deleted', { chatId: String(chatId) });
+    }
+
+    return res.json({ success: true, message: 'Conversation deleted.' });
+  } catch (error) {
+    console.error('deleteChat error:', error);
     return res.status(500).json({ success: false, message: error.message });
   }
 }
