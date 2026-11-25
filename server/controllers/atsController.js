@@ -1,220 +1,403 @@
-import mammoth from 'mammoth'
-import { extractText, getDocumentProxy } from 'unpdf'
-import { analyzeResume } from '../services/atsAnalyzer.js'
-import { generateResumeFeedback, AiError } from '../services/aiService.js'
-import { createRateLimiter } from '../utils/rateLimiter.js'
-import Job from '../models/Job.js'
+import { createRequire } from 'module';
+import mammoth from 'mammoth';
+import Job from '../models/Job.js';
 
-const HIRELAYER_PARSE_URL = 'https://hirelayer.co/api/v4/resumes/parse'
-const HIRELAYER_MAX_BYTES = 4.5 * 1024 * 1024
-const MIN_TEXT_LENGTH = 50
+const require = createRequire(import.meta.url);
+const pdfParseModule = require('pdf-parse');
 
-const getAuth = (req) => (typeof req.auth === 'function' ? req.auth() : req.auth)
+const SKILL_GROUPS = {
+  Frontend: ['react', 'next.js', 'nextjs', 'vue', 'angular', 'typescript', 'javascript', 'html', 'css', 'tailwind'],
+  Backend: ['node.js', 'nodejs', 'express', 'python', 'django', 'flask', 'java', 'spring', 'php', 'go', 'c#', '.net'],
+  Database: ['mongodb', 'mongoose', 'sql', 'postgresql', 'mysql', 'redis', 'firebase'],
+  'Cloud & DevOps': ['aws', 'azure', 'gcp', 'docker', 'kubernetes', 'git', 'github', 'ci/cd', 'vercel', 'linux'],
+  'AI & Data': ['ai', 'llm', 'machine learning', 'data analysis', 'pandas', 'numpy', 'tensorflow', 'pytorch'],
+};
 
-// AI feedback costs money: 10 requests per hour per signed-in user
-// (in-memory, so on serverless hosting the count can reset between requests)
-const aiLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 10 })
+const ACTION_VERBS = [
+  'built', 'developed', 'designed', 'implemented', 'led', 'created', 'improved',
+  'optimized', 'reduced', 'increased', 'launched', 'architected', 'automated',
+  'collaborated', 'managed', 'delivered', 'refactored', 'integrated',
+];
 
-// Newest visible jobs used for "recommended jobs"
-const loadJobsForMatching = () =>
-    Job.find({ visible: true })
-        .sort({ date: -1 })
-        .limit(40)
-        .populate({ path: 'companyId', select: 'name' })
-        .lean()
+const STOP_WORDS = new Set([
+  'the', 'and', 'for', 'with', 'that', 'this', 'from', 'your', 'have', 'will',
+  'are', 'you', 'our', 'can', 'all', 'not', 'but', 'work', 'role', 'team',
+  'experience', 'skills', 'using', 'used', 'job', 'description', 'ability',
+]);
 
-// Check actual file signatures
-const isPdf = (buf) =>
-    buf.length > 4 &&
-    buf.subarray(0, 4).toString('latin1') === '%PDF'
+async function extractResumeText(file) {
+  const name = (file.originalname || '').toLowerCase();
 
-const isZip = (buf) =>
-    buf.length > 4 &&
-    buf[0] === 0x50 &&
-    buf[1] === 0x4b
+  if (name.endsWith('.pdf') || file.mimetype === 'application/pdf') {
+    const PDFParseClass =
+      pdfParseModule?.PDFParse || pdfParseModule?.default?.PDFParse;
 
-// Extract text locally from PDF or DOCX (Vercel Serverless compatible)
-const extractTextLocally = async (file) => {
-    const fileName = file.originalname.toLowerCase()
-
-    if (fileName.endsWith('.pdf')) {
-        const pdf = await getDocumentProxy(new Uint8Array(file.buffer))
-        const { totalPages, text } = await extractText(pdf, { mergePages: true })
-
+    if (typeof PDFParseClass === 'function') {
+      const parser = new PDFParseClass({ data: file.buffer });
+      try {
+        const textResult = await parser.getText();
+        const infoResult = await parser.getInfo().catch(() => null);
         return {
-            text: text || '',
-            pages: totalPages || null
-        }
+          text: textResult?.text || '',
+          pages: infoResult?.total || textResult?.pages?.length || null,
+        };
+      } finally {
+        await parser.destroy().catch(() => {});
+      }
     }
 
-    const result = await mammoth.extractRawText({
-        buffer: file.buffer
-    })
+    const legacyFn =
+      typeof pdfParseModule === 'function'
+        ? pdfParseModule
+        : typeof pdfParseModule?.default === 'function'
+        ? pdfParseModule.default
+        : null;
 
+    if (legacyFn) {
+      const parsed = await legacyFn(file.buffer);
+      return {
+        text: parsed?.text || '',
+        pages: parsed?.numpages || null,
+      };
+    }
+
+    throw new Error('PDF parser export is not a function or PDFParse class.');
+  }
+
+  if (
+    name.endsWith('.docx') ||
+    file.mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  ) {
+    const parsed = await mammoth.extractRawText({ buffer: file.buffer });
     return {
-        text: result.value || '',
-        pages: null
-    }
+      text: parsed.value || '',
+      pages: null,
+    };
+  }
+
+  throw new Error('Unsupported resume format. Please upload a PDF or DOCX file.');
 }
 
-// HireLayer fallback OCR for scanned resumes
-const extractTextWithHireLayer = async (file) => {
-    const apiKey = (process.env.HIRELAYER_API_KEY || '')
-        .replace(/[\s"'\\]+$/g, '')
-        .trim()
-
-    if (!apiKey) return ''
-    if (file.size > HIRELAYER_MAX_BYTES) return ''
-
-    try {
-        const form = new FormData()
-        form.append(
-            'file',
-            new Blob([file.buffer], { type: file.mimetype }),
-            file.originalname
-        )
-
-        const response = await fetch(HIRELAYER_PARSE_URL, {
-            method: 'POST',
-            headers: {
-                'X-API-Key': apiKey
-            },
-            body: form,
-            signal: AbortSignal.timeout(9000) // Stay under Vercel's 10s Hobby timeout
-        })
-
-        const data = await response.json().catch(() => null)
-
-        if (!response.ok) {
-            console.error(
-                `HireLayer error ${response.status}:`,
-                data?.error?.code,
-                data?.error?.message
-            )
-            return ''
-        }
-
-        return data?.resume?.info_resume?.text || ''
-    } catch (error) {
-        console.error('HireLayer request failed:', error.message)
-        return ''
-    }
+function detectSections(text) {
+  const lower = text.toLowerCase();
+  return {
+    summary: /\b(summary|objective|profile|about)\b/.test(lower),
+    experience: /\b(experience|work history|employment|internship)\b/.test(lower),
+    education: /\b(education|degree|university|college|bachelor|master|b\.?tech)\b/.test(lower),
+    skills: /\b(skills|technical skills|technologies|tools|stack)\b/.test(lower),
+    projects: /\b(projects|project)\b/.test(lower),
+  };
 }
 
-// POST /api/ats/analyze
-export const analyzeResumeFile = async (req, res) => {
-    try {
-        const file = req.file
+function extractSkills(text) {
+  const lower = text.toLowerCase();
+  const found = [];
 
-        if (!file) {
-            return res.status(400).json({
-                success: false,
-                message: 'Please upload your resume as a PDF or DOCX file.'
-            })
-        }
-
-        // Optional AI coaching: needs a signed-in user
-        const wantsAi = String(req.body?.ai) === 'true'
-
-        if (wantsAi) {
-            const userId = getAuth(req)?.userId
-
-            if (!userId) {
-                return res.status(401).json({
-                    success: false,
-                    message: 'Please log in to get AI feedback.'
-                })
-            }
-
-            if (!aiLimiter.hit(userId)) {
-                return res.status(429).json({
-                    success: false,
-                    message: 'You have reached the hourly limit for AI feedback. Please try again later.'
-                })
-            }
-        }
-
-        const jobDescription = String(
-            req.body?.jobDescription || ''
-        ).slice(0, 10000)
-
-        const fileName = file.originalname.toLowerCase()
-        const validPdf = fileName.endsWith('.pdf') && isPdf(file.buffer)
-        const validDocx = fileName.endsWith('.docx') && isZip(file.buffer)
-
-        if (!validPdf && !validDocx) {
-            return res.status(400).json({
-                success: false,
-                message: 'The file content does not match a valid PDF or DOCX document.'
-            })
-        }
-
-        let text = ''
-        let pages = null
-
-        // 1. Try local extraction
-        try {
-            const extracted = await extractTextLocally(file)
-            text = extracted.text
-            pages = extracted.pages
-        } catch (error) {
-            console.error('Local extraction failed:', error)
-        }
-
-        // 2. Use HireLayer if local extraction finds insufficient text
-        if (text.trim().length < MIN_TEXT_LENGTH) {
-            const fallbackText = await extractTextWithHireLayer(file)
-            if (fallbackText.trim().length >= MIN_TEXT_LENGTH) {
-                text = fallbackText
-            }
-        }
-
-        // 3. Check extracted text
-        if (text.trim().length < MIN_TEXT_LENGTH) {
-            return res.status(422).json({
-                success: false,
-                message:
-                    'We could not read any text from this file. It may be a scanned image or a design-heavy PDF. ' +
-                    'ATS software cannot read these either, so export a text-based PDF or DOCX and try again.'
-            })
-        }
-
-        // 4. Analyze resume
-        const analysis = analyzeResume({
-            text,
-            pages,
-            jobDescription
-        })
-
-        // 5. Optional AI feedback + job recommendations
-        let aiFeedback = null
-        let aiError = null
-
-        if (wantsAi) {
-            try {
-                const jobs = await loadJobsForMatching()
-                aiFeedback = await generateResumeFeedback({ text, analysis, jobs })
-            } catch (error) {
-                aiError = error instanceof AiError
-                    ? error.message
-                    : 'AI feedback is unavailable right now.'
-                if (!(error instanceof AiError)) console.error('AI feedback error:', error.message)
-            }
-        }
-
-        return res.json({
-            success: true,
-            fileName: file.originalname,
-            analysis,
-            aiFeedback,
-            aiError
-        })
-    } catch (error) {
-        console.error('ATS analysis error:', error)
-        return res.status(500).json({
-            success: false,
-            message:
-                'We could not analyze this file. Make sure it is a valid PDF or DOCX that is not password protected.'
-        })
+  for (const [category, keywords] of Object.entries(SKILL_GROUPS)) {
+    const matched = keywords.filter((kw) => {
+      const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`(^|[^a-z0-9+#.])${escaped}([^a-z0-9+#.]|$)`, 'i').test(lower);
+    });
+    if (matched.length > 0) {
+      found.push({ category, skills: matched });
     }
+  }
+
+  return found;
 }
+
+function computeKeywordMatch(resumeText, jobDescription) {
+  const cleanJd = (jobDescription || '').trim();
+  if (!cleanJd) {
+    return { mode: 'none', matchPercent: 0, matched: [], missing: [] };
+  }
+
+  const jdTokens = [
+    ...new Set(
+      (cleanJd.toLowerCase().match(/[a-z0-9+#.]{2,}/g) || []).filter(
+        (token) => !STOP_WORDS.has(token) && !/^\d+$/.test(token)
+      )
+    ),
+  ].slice(0, 35);
+
+  const resumeLower = resumeText.toLowerCase();
+  const matched = jdTokens.filter((token) => resumeLower.includes(token));
+  const missing = jdTokens.filter((token) => !resumeLower.includes(token));
+  const matchPercent =
+    jdTokens.length > 0 ? Math.round((matched.length / jdTokens.length) * 100) : 0;
+
+  return {
+    mode: 'job-description',
+    matchPercent,
+    matched,
+    missing,
+  };
+}
+
+function buildSuggestions(stats, sectionsDetected, keywordMatch, skillsFound) {
+  const suggestions = [];
+
+  if (!sectionsDetected.summary) {
+    suggestions.push({
+      severity: 'important',
+      title: 'Add a professional summary',
+      message: 'Include a 2–3 line summary at the top highlighting your core role, stack, and experience.',
+    });
+  }
+
+  if (stats.quantifiedAchievements === 0) {
+    suggestions.push({
+      severity: 'critical',
+      title: 'Add measurable impact numbers',
+      message: 'Include percentages, time saved, revenue/user impact, or scale metrics in your experience bullets.',
+    });
+  }
+
+  if (stats.actionVerbs < 3) {
+    suggestions.push({
+      severity: 'important',
+      title: 'Use stronger action verbs',
+      message: 'Start bullet points with verbs like Built, Developed, Implemented, Led, or Optimized.',
+    });
+  }
+
+  if (skillsFound.length === 0) {
+    suggestions.push({
+      severity: 'critical',
+      title: 'List technical skills clearly',
+      message: 'Add a dedicated Skills section with relevant languages, frameworks, databases, and tools.',
+    });
+  }
+
+  if (keywordMatch.mode === 'job-description' && keywordMatch.missing.length > 0) {
+    suggestions.push({
+      severity: 'tip',
+      title: 'Cover missing job keywords',
+      message: `Consider weaving accurate terms from the job description into your resume: ${keywordMatch.missing
+        .slice(0, 8)
+        .join(', ')}.`,
+    });
+  }
+
+  return suggestions;
+}
+
+async function buildAiFeedback(resumeText, jobDescription, keywordMatch) {
+  const openJobs = await Job.find({ visible: { $ne: false } })
+    .populate('companyId', 'name')
+    .limit(5)
+    .lean();
+
+  const recommendedJobs = openJobs.map((job) => ({
+    jobId: String(job._id),
+    title: job.title,
+    company: job.companyId?.name || '',
+    location: job.location || '',
+    reason:
+      keywordMatch.matched.length > 0
+        ? `Matches skills/keywords such as ${keywordMatch.matched.slice(0, 3).join(', ')}.`
+        : 'Open role available on Jobaora that aligns with general software/technical profiles.',
+  }));
+
+  const bulletCandidates = resumeText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 25 && line.length < 180)
+    .slice(0, 2);
+
+  const rewrittenBullets = bulletCandidates.map((line) => ({
+    original: line,
+    improved: `${line.replace(/^[•\-*]\s*/, '')} — improving efficiency by [X%] and reducing manual effort.`,
+  }));
+
+  const strengths = [];
+  if (keywordMatch.matched.length > 0) {
+    strengths.push(`Matched target keywords: ${keywordMatch.matched.slice(0, 6).join(', ')}.`);
+  }
+  if (resumeText.length > 200) {
+    strengths.push('Resume contains extractable text and substantive content for ATS parsing.');
+  }
+
+  const improvements = [];
+  if (keywordMatch.missing.length > 0) {
+    improvements.push(`Address missing keywords where truthful: ${keywordMatch.missing.slice(0, 6).join(', ')}.`);
+  }
+  improvements.push('Quantify outcomes in your project and work experience bullets with concrete metrics.');
+
+  return {
+    summary: jobDescription
+      ? 'Initial tailored feedback generated against the provided job description.'
+      : 'Initial resume feedback generated from your uploaded document.',
+    strengths,
+    improvements,
+    rewrittenBullets,
+    recommendedJobs,
+  };
+}
+
+export const analyzeResume = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please upload a PDF or DOCX resume file.',
+      });
+    }
+
+    const { text, pages } = await extractResumeText(req.file);
+    const cleanedText = (text || '').replace(/\s+/g, ' ').trim();
+
+    if (!cleanedText || cleanedText.length < 20) {
+      return res.status(400).json({
+        success: false,
+        message: 'Could not extract readable text from the resume. Please upload a text-based PDF or DOCX.',
+      });
+    }
+
+    const words = cleanedText.match(/\b[\w+#.]+\b/g) || [];
+    const wordCount = words.length;
+
+    const actionVerbs = ACTION_VERBS.reduce((count, verb) => {
+      const matches = cleanedText.match(new RegExp(`\\b${verb}\\b`, 'gi'));
+      return count + (matches ? matches.length : 0);
+    }, 0);
+
+    const quantifiedMatches = cleanedText.match(/\b\d+(\.\d+)?(%|\+|x|k|m)?\b/gi) || [];
+    const quantifiedAchievements = quantifiedMatches.length;
+
+    const sectionsDetected = detectSections(text);
+    const skillsFound = extractSkills(text);
+    const keywordMatch = computeKeywordMatch(text, req.body?.jobDescription || '');
+
+    const sectionCount = Object.values(sectionsDetected).filter(Boolean).length;
+    const sectionScore = Math.min(25, sectionCount * 5);
+    const contentScore = Math.min(25, Math.round((wordCount / 400) * 25));
+    const impactScore = Math.min(25, actionVerbs * 3 + quantifiedAchievements * 3);
+    const skillOrKeywordScore =
+      keywordMatch.mode === 'job-description'
+        ? Math.min(25, Math.round((keywordMatch.matchPercent / 100) * 25))
+        : Math.min(25, skillsFound.reduce((sum, g) => sum + g.skills.length * 4, 0));
+
+    const score = Math.min(
+      100,
+      Math.max(10, sectionScore + contentScore + impactScore + skillOrKeywordScore)
+    );
+
+    const label =
+      score >= 85
+        ? 'Excellent ATS Readiness'
+        : score >= 70
+        ? 'Good ATS Readiness'
+        : score >= 50
+        ? 'Fair — Needs Optimization'
+        : 'Needs Significant Improvement';
+
+    const breakdown = [
+      {
+        key: 'sections',
+        label: 'Sections & Structure',
+        score: sectionScore,
+        max: 25,
+        checks: [
+          {
+            label: 'Core resume sections present',
+            points: sectionScore,
+            max: 25,
+            status: sectionScore >= 20 ? 'pass' : sectionScore >= 10 ? 'partial' : 'fail',
+            note: `Detected ${sectionCount} of 5 standard sections.`,
+          },
+        ],
+      },
+      {
+        key: 'impact',
+        label: 'Action Verbs & Quantified Impact',
+        score: impactScore,
+        max: 25,
+        checks: [
+          {
+            label: 'Action verbs & measurable metrics',
+            points: impactScore,
+            max: 25,
+            status: impactScore >= 18 ? 'pass' : impactScore >= 9 ? 'partial' : 'fail',
+            note: `${actionVerbs} action verbs and ${quantifiedAchievements} numeric metrics detected.`,
+          },
+        ],
+      },
+      {
+        key: 'keywords',
+        label: keywordMatch.mode === 'job-description' ? 'Job Keyword Alignment' : 'Skills Coverage',
+        score: skillOrKeywordScore,
+        max: 25,
+        checks: [
+          {
+            label:
+              keywordMatch.mode === 'job-description'
+                ? 'Job description keyword match'
+                : 'Recognized technical skills',
+            points: skillOrKeywordScore,
+            max: 25,
+            status: skillOrKeywordScore >= 18 ? 'pass' : skillOrKeywordScore >= 9 ? 'partial' : 'fail',
+            note:
+              keywordMatch.mode === 'job-description'
+                ? `${keywordMatch.matchPercent}% of target job terms found.`
+                : `${skillsFound.reduce((sum, g) => sum + g.skills.length, 0)} skills found across categories.`,
+          },
+        ],
+      },
+      {
+        key: 'length',
+        label: 'Content Depth & Readability',
+        score: contentScore,
+        max: 25,
+        checks: [
+          {
+            label: 'Resume word count',
+            points: contentScore,
+            max: 25,
+            status: wordCount >= 250 && wordCount <= 1200 ? 'pass' : wordCount >= 100 ? 'partial' : 'fail',
+            note: `${wordCount} words extracted.`,
+          },
+        ],
+      },
+    ];
+
+    const suggestions = buildSuggestions(
+      { wordCount, pages, actionVerbs, quantifiedAchievements },
+      sectionsDetected,
+      keywordMatch,
+      skillsFound
+    );
+
+    const analysis = {
+      score,
+      label,
+      stats: {
+        wordCount,
+        pages,
+        actionVerbs,
+        quantifiedAchievements,
+      },
+      sectionsDetected,
+      skillsFound,
+      keywordMatch,
+      suggestions,
+      breakdown,
+    };
+
+    const wantsAi = String(req.body?.ai || '').toLowerCase() === 'true';
+    const aiFeedback = wantsAi
+      ? await buildAiFeedback(text, req.body?.jobDescription || '', keywordMatch)
+      : null;
+
+    return res.json({
+      success: true,
+      analysis,
+      aiFeedback,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to analyze resume.',
+    });
+  }
+};

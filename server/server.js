@@ -12,6 +12,7 @@ import companyRoutes from './routes/companyRoutes.js';
 import jobRoutes from './routes/jobRoutes.js';
 import userRoutes from './routes/userRoutes.js';
 import chatRoutes from './routes/chatRoutes.js';
+import atsRoutes from './routes/atsRoutes.js';
 import { registerChatSocketHandlers } from './socket/chatSocket.js';
 
 const app = express();
@@ -35,6 +36,7 @@ app.use('/api/company', companyRoutes);
 app.use('/api/jobs', jobRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/ats', atsRoutes);
 
 // Sentry error handler
 Sentry.setupExpressErrorHandler(app);
