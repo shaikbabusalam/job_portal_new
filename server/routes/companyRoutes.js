@@ -15,7 +15,7 @@ import {
   deleteInterview,
 } from '../controllers/companyController.js';
 import upload from '../config/multer.js';
-import { protectCompany } from '../middlewares/authMiddleware.js';
+import { protectCompany } from '../middlewares/authMiddleWare.js';
 
 const router = express.Router();
 
